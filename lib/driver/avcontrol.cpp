@@ -50,6 +50,10 @@ const char *proc_videomode_24 = "/proc/stb/video/videomode_24hz"; // NOSONAR
 
 const char *proc_wss = "/proc/stb/denc/0/wss"; // NOSONAR
 
+#ifdef HAVE_HISTB
+#include <lib/driver/avcontrol_histb_impl.h>
+#endif
+
 eAVControl *eAVControl::m_instance = nullptr;
 
 /// @brief Normalize a driver video mode to the Enigma2 config value
@@ -408,6 +412,9 @@ int eAVControl::getFrameRate(int defaultVal, int flags) const
 /// @return
 std::string eAVControl::getVideoMode(const std::string &defaultVal, int flags) const
 {
+#ifdef HAVE_HISTB
+	return histbGetVideoMode();
+#endif
 #ifdef VIDEO_MODE_50
 	std::string result = CFile::read(proc_videomode_50, __MODULE__, flags);
 #else
@@ -428,6 +435,11 @@ std::string eAVControl::getVideoMode(const std::string &defaultVal, int flags) c
 void eAVControl::setVideoMode(const std::string &newMode, int flags) const
 {
 	std::string driverMode = getDriverVideoMode(newMode);
+#ifdef HAVE_HISTB
+	if (histbSetVideoMode(newMode, flags))
+		CFile::writeStr(proc_videomode, driverMode, __MODULE__, flags);
+	return;
+#endif
 #ifdef DREAMNEXTGEN
 	if (!m_encoder_active && !m_standby_video_mode.empty())
 	{
@@ -518,6 +530,10 @@ void eAVControl::setHDMIColordepth(const std::string &colordepth, int flags)
 /// @param flags
 void eAVControl::setVideoModeMulti(const std::string &mode50, const std::string &mode60, const std::string &mode24, int flags) const
 {
+#ifdef HAVE_HISTB
+	setVideoMode(!mode50.empty() ? mode50 : (!mode60.empty() ? mode60 : mode24), flags);
+	return;
+#endif
 #ifdef DREAMNEXTGEN
 	setVideoMode(!mode50.empty() ? mode50 : (!mode60.empty() ? mode60 : mode24), flags);
 #else
@@ -606,6 +622,9 @@ void eAVControl::disableHDMIIn(int flags) const
 /// @return
 std::string eAVControl::getPreferredModes(int flags) const
 {
+#ifdef HAVE_HISTB
+	return histbReadEdidModes();
+#endif
 
 #ifdef DREAMNEXTGEN
 	const char *fileName = "/sys/class/amhdmitx/amhdmitx0/disp_cap";
@@ -658,6 +677,9 @@ std::string eAVControl::getPreferredModes(int flags) const
 /// @return
 std::string eAVControl::readAvailableModes(int flags) const
 {
+#ifdef HAVE_HISTB
+	return histbReadEdidModes();
+#endif
 
 #ifdef DREAMNEXTGEN
 	return std::string("480i 576i 480p 576p 720p 720p50 1080i 1080i50 1080p 1080p24 1080p25 1080p30 1080p50 2160p24 2160p25 2160p30 2160p50 2160p smpte24 smpte25 smpte30 smpte50 smpte60");
@@ -685,6 +707,9 @@ std::string eAVControl::readAvailableModes(int flags) const
 /// @return
 std::string eAVControl::getAvailableModes() const
 {
+#ifdef HAVE_HISTB
+	return histbReadEdidModes();
+#endif
 	return m_videomode_choices;
 }
 
