@@ -5,6 +5,7 @@ from enigma import eTimer
 
 from ServiceReference import ServiceReference
 from Components.ActionMap import HelpableActionMap
+from Components.Console import Console
 from Components.config import ConfigNothing, ConfigSelection, NoSave, config
 from Components.ScrollLabel import ScrollLabel
 from Components.SystemInfo import BoxInfo, updateSysSoftCam
@@ -15,27 +16,34 @@ from Screens.Processing import Processing
 from Screens.Setup import Setup
 from Tools.Directories import isPluginInstalled
 from Tools.GetEcmInfo import GetEcmInfo
-from Tools.ServiceAction import ServiceAction
+from Tools.ServiceAction import ServiceAction, getSystemdSoftcamUnit
 
 
 class CamControl:
-	'''CAM convention is that a softlink named /etc/init.c/softcam.* points
-	to the start/stop script.'''
+	"""Control the existing init-script manager or Debian's OSCam systemd unit."""
 
 	def __init__(self, name):
 		self.name = name
 		self.notFound = None
 		self.link = join("/etc/init.d", name)
+		self.systemdUnit = None
+		if name == "softcam" and not exists(self.link) and BoxInfo.getItem("distro") == "debian":
+			self.systemdUnit = getSystemdSoftcamUnit()
+			if self.systemdUnit:
+				self.console = Console()
+		if self.systemdUnit:
+			return
 		if not exists(self.link):
 			print(f"[CamControl] No softcam link: '{self.link}'")
 			if islink(self.link) and exists("/etc/init.d/softcam.None"):
 				target = self.current()
 				if target:
 					self.notFound = target
-					print(f"[CamControl] wrong target '{target}' set to None")
-					self.switch("None", None)  # wrong link target set to None
+					print("[CamControl] Configured cam script is unavailable.")
 
 	def getList(self):
+		if self.systemdUnit:
+			return ["oscam"]
 		result = []
 		prefix = f"{self.name}."
 		for f in listdir("/etc/init.d"):
@@ -44,6 +52,9 @@ class CamControl:
 		return result
 
 	def current(self):
+		if self.systemdUnit:
+			# The configured manager, not a claim that its process is running.
+			return "oscam"
 		try:
 			line = readlink(self.link)
 			prefix = f"{self.name}."
@@ -54,13 +65,52 @@ class CamControl:
 		return None
 
 	def switch(self, newcam, callback):
+		if self.systemdUnit:
+			if newcam != "oscam":
+				if callable(callback):
+					callback(1)
+				return
+			self.systemdAction("start", callback)
+			return
 		if self.name == "softcam":
 			ServiceAction.switchSoftcam(newcam, callback)
 		else:
 			ServiceAction.switchCardserver(newcam, callback)
 
 	def restart(self, callback):
+		if self.systemdUnit:
+			self.systemdAction("restart", callback)
+			return
 		ServiceAction(self.name).restart(callback)
+
+	def systemdAction(self, action, callback):
+		def finished(data, exitCode, extraArgs):
+			if callable(callback):
+				callback(exitCode)
+
+		def actionFinished(data, exitCode, extraArgs):
+			if exitCode:
+				finished(data, exitCode, extraArgs)
+			else:
+				self.console.ePopen(["/usr/bin/systemctl", "/usr/bin/systemctl", "is-active", "--quiet", self.systemdUnit], finished)
+
+		self.console.ePopen(["/usr/bin/systemctl", "/usr/bin/systemctl", action, self.systemdUnit], actionFinished)
+
+
+def initCamConfig(name):
+	control = CamControl(name)
+	choices = control.getList()
+	current = control.current()
+	if not choices:
+		choices = [("", _("None"))]
+		current = ""
+	path = f"{name}s"
+	selection = getattr(config.misc, path, None)
+	if selection is None:
+		setattr(config.misc, path, ConfigSelection(default=current, choices=choices))
+	else:
+		selection.setChoices(choices, default=current)
+	return control
 
 
 class CamSetupCommon(Setup):
@@ -93,23 +143,39 @@ class CamSetupCommon(Setup):
 		Setup.changedEntry(self)
 
 	def showProcess(self, stopService):
+		self.suspendAllActionMaps()
 		if stopService:
 			self.oldServiceRef = self.session.nav.getCurrentlyPlayingServiceOrGroup()
 			self.session.nav.stopService()
 		Processing.instance.setDescription(_("Restarting..."))
 		Processing.instance.showProgress(endless=True)
 
+	def restartDone(self, exitCode=None):
+		self.resumeAllActionMaps()
+		if self.oldServiceRef:
+			self.session.nav.playService(self.oldServiceRef, adjust=False)
+			self.oldServiceRef = None
+		Processing.instance.hideProgress()
+		if exitCode:
+			self.session.showError(_("Unable to apply %s settings (exit code %s).") % (self.servicetype, exitCode))
+			return False
+		try:
+			self.saveAll()
+		except OSError as error:
+			self.session.showError(_("Unable to save settings: %s") % error)
+			return False
+		updateSysSoftCam()
+		return True
+
+	def saveDone(self, exitCode=None):
+		if self.restartDone(exitCode):
+			self.close()
+
 
 class CardserverSetup(CamSetupCommon):
 	def __init__(self, session):
 		self.servicetype = "cardserver"
-		self.camctrl = CamControl(self.servicetype)
-		cardservers = self.camctrl.getList()
-		defaultcardserver = self.camctrl.current()
-		if not cardservers:
-			cardservers = [("", _("None"))]
-			defaultcardserver = ""
-		config.misc.cardservers = ConfigSelection(default=defaultcardserver, choices=cardservers)
+		self.camctrl = initCamConfig(self.servicetype)
 		CamSetupCommon.__init__(self, session=session, setup="Cardserver")
 
 	def updateButtons(self):
@@ -119,38 +185,20 @@ class CardserverSetup(CamSetupCommon):
 		if config.misc.cardservers.value != self.camctrl.current():
 			self.showProcess(False)
 			self.camctrl.switch(config.misc.cardservers.value, self.saveDone)
+		else:
+			self.saveDone()
 
 	def keyRestart(self):
 		self.showProcess(False)
 		self.camctrl.restart(self.restartDone)
 
-	def restartDone(self, exitCode=None):
-		if self.oldServiceRef:
-			self.session.nav.playService(self.oldServiceRef, adjust=False)
-		self.saveAll()
-		updateSysSoftCam()
-		Processing.instance.hideProgress()
-
-	def saveDone(self, exitCode=None):
-		self.restartDone()
-		self.close()
 
 
 class SoftcamSetup(CamSetupCommon):
 	def __init__(self, session):
 		self.servicetype = "softcam"
-		self.camctrl = CamControl(self.servicetype)
+		self.camctrl = initCamConfig(self.servicetype)
 		self.ecminfo = GetEcmInfo()
-		softcams = self.camctrl.getList()
-		defaultsoftcam = self.camctrl.current()
-		if not softcams:
-			softcams = [("", _("None"))]
-			defaultsoftcam = ""
-		config.misc.softcams = ConfigSelection(default=defaultsoftcam, choices=softcams)
-		if self.camctrl.notFound:
-			print("[SoftcamSetup] current: '%s' not found" % self.camctrl.notFound)
-			config.misc.softcams.value = "None"
-			config.misc.softcams.save()
 		CamSetupCommon.__init__(self, session=session, setup="Softcam")
 		self["key_blue"] = StaticText()
 		self["infoActions"] = HelpableActionMap(self, ["ColorActions"], {
@@ -175,16 +223,6 @@ class SoftcamSetup(CamSetupCommon):
 		self.showProcess(True)
 		self.camctrl.restart(self.restartDone)
 
-	def saveDone(self, exitCode=None):
-		self.restartDone()
-		self.close()
-
-	def restartDone(self, exitCode=None):
-		if self.oldServiceRef:
-			self.session.nav.playService(self.oldServiceRef, adjust=False)
-		self.saveAll()
-		updateSysSoftCam()
-		Processing.instance.hideProgress()
 
 	def updateButtons(self):
 		valid = config.misc.softcams.value and config.misc.softcams.value.lower() != "none"

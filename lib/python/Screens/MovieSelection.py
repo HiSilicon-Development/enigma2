@@ -398,7 +398,8 @@ class MovieSelection(Screen, SelectionEventInfo, InfoBarBase, ProtectedScreen):
 		rcinput = eRCInput.getInstance()
 		rcinput.setKeyboardMode(rcinput.kmNone)
 
-	def initUserDefinedActions(self):
+	@staticmethod
+	def initUserDefinedActions():
 		global userDefinedButtons, userDefinedActions, config
 		if userDefinedButtons is None:
 			userDefinedActions = {
@@ -1938,6 +1939,7 @@ class MovieContextMenuSummary(Screen):
 
 class MovieSelectionSetup(Setup):
 	def __init__(self, session):
+		MovieSelection.initUserDefinedActions()
 		Setup.__init__(self, session, setup="MovieSelection")
 
 	def keySave(self):

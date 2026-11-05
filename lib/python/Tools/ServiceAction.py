@@ -13,7 +13,15 @@
 # callback(exitCode: int) is called exactly once (on reply or timeout).
 # exitCode == 0  → success,  exitCode != 0  → failure/timeout.
 # ===========================================================================
+from os.path import isfile, join
 from enigma import eServiceActionClient as _C
+
+
+def getSystemdSoftcamUnit():
+    """Return the installed OSCam unit ID without starting or probing its service."""
+    if isfile("/usr/bin/systemctl") and any(isfile(join(directory, "oscam.service")) for directory in ("/etc/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system")):
+        return "oscam.service"
+    return None
 
 
 class ServiceAction:
