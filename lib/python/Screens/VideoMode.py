@@ -175,7 +175,8 @@ class VideoSettings(Setup):
 				if config.av.aspectswitch.enabled.value:
 					for aspect in range(5):
 						items.append((f" -> {avSwitch.ASPECT_SWITCH_MSG[aspect]}", config.av.aspectswitch.offsets[str(aspect)]))
-			items.append((_("Allow unsupported modes"), config.av.edid_override, _("This option allows you to use all HDMI Modes.")))
+			if BoxInfo.getItem("platform") != "hi3798cv200":
+				items.append((_("Allow unsupported modes"), config.av.edid_override, _("This option allows you to use all HDMI Modes.")))
 		if port == "Scart":
 			items.append((_("Color format"), config.av.colorformat, _("Configure which color format should be used on the SCART output.")))
 			if level >= 1:

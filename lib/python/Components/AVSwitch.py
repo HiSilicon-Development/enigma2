@@ -1070,7 +1070,14 @@ class AVSwitchBase:
 
 	def readPreferredModes(self, saveMode=False, readOnly=False):
 		modes = ""
-		if config.av.edid_override.value is False:
+		if HISTB:
+			# One or two real timings are valid capabilities, not a driver failure.
+			# Never broaden them or bypass the sink when EDID is unavailable.
+			modes = eAVControl.getInstance().getPreferredModes(1)
+			self.modes_preferred = list(dict.fromkeys(modes.split()))
+			if saveMode:
+				return self.modes_preferred[:]
+		elif config.av.edid_override.value is False:
 			modes = eAVControl.getInstance().getPreferredModes(1)
 			if saveMode:
 				modes = modes.split()
@@ -1079,10 +1086,10 @@ class AVSwitchBase:
 			print(f"[AVSwitch] getPreferredModes: '{modes}'.")
 			seen = set()
 			self.modes_preferred = [m for m in modes.split() if 'x' not in m and not (m in seen or seen.add(m))]  # Remove duplicates and modes with 'x' in the name, which are not real modes.
-		if len(modes) < 2:
+		if not HISTB and len(modes) < 2:
 			self.modes_preferred = self.readAvailableModes()
 			print(f"[AVSwitch] Used default modes: {self.modes_preferred}.")
-		if len(self.modes_preferred) <= 2:
+		if not HISTB and len(self.modes_preferred) <= 2:
 			print(f"[AVSwitch] Preferend modes not okay, possible driver failer, length={len(self.modes_preferred)}.")
 			self.modes_preferred = self.readAvailableModes()
 		if readOnly:
