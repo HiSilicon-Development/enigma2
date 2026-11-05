@@ -41,6 +41,8 @@ class Screen(dict):
 		self.onShow = []
 		self.onHide = []
 		self.execing = False
+		# Summary callbacks can fail before execBegin; teardown still needs this state.
+		self.activeComponents = []
 		self.shown = True
 		self.alreadyShown = False  # Already shown is false until the screen is really shown (after creation).
 		self.renderer = []

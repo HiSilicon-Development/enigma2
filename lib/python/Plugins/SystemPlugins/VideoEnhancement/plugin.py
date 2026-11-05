@@ -13,6 +13,13 @@ from Screens.MessageBox import MessageBox
 from . import VideoEnhancement  # noqa F401
 
 
+def videoEnhancementAvailable():
+	# An apply node alone does not mean that the driver exposes any controls.
+	return os_path.exists("/proc/stb/vmpeg/0/pep_apply") and (
+		any(not isinstance(entry, ConfigNothing) for name, entry in config.pep.dict().items() if name != "configsteps")
+		or not isinstance(config.av.scaler_sharpness, ConfigNothing))
+
+
 class VideoEnhancementSetup(ConfigListScreen, Screen):
 	def __init__(self, session):
 		Screen.__init__(self, session)
@@ -39,16 +46,19 @@ class VideoEnhancementSetup(ConfigListScreen, Screen):
 				"blue": self.keyBlue,
 				"menu": self.closeRecursive,
 			}, -2)
+		for action in ("save", "yellow", "blue"):
+			self["actions"].setEnabledAction(action, bool(self.list))
 
 		self["key_red"] = StaticText(_("Cancel"))
-		self["key_green"] = StaticText(_("OK"))
-		self["key_yellow"] = StaticText(_("Last config"))
-		self["key_blue"] = StaticText(_("Default"))
+		self["key_green"] = StaticText(_("OK") if self.list else "")
+		self["key_yellow"] = StaticText(_("Last config") if self.list else "")
+		self["key_blue"] = StaticText(_("Default") if self.list else "")
 
 		if self.SelectionChanged not in self["config"].onSelectionChanged:
 			self["config"].onSelectionChanged.append(self.SelectionChanged)
 		self.rememberOldSettings()
 		self.changedEntry()
+		self.SelectionChanged()
 
 	def rememberOldSettings(self):
 		self.oldContrast = config.pep.contrast.value
@@ -106,7 +116,7 @@ class VideoEnhancementSetup(ConfigListScreen, Screen):
 		#	self["config"].list.sort()
 
 	def SelectionChanged(self):
-		self["description"].setText(self["config"].getCurrent()[2])
+		self["description"].setText(self.getCurrentDescription() if self.list else _("There are no items currently available for this screen."))
 
 	def PreviewClosed(self):
 		self["config"].invalidate(self["config"].getCurrent())
@@ -114,6 +124,8 @@ class VideoEnhancementSetup(ConfigListScreen, Screen):
 
 	def keyLeft(self):
 		current = self["config"].getCurrent()
+		if current is None:
+			return
 		if current == self.splitEntry or current == self.color_spaceEntry:
 			ConfigListScreen.keyLeft(self)
 		elif (current == self.scaler_vertical_dejaggingEntry) or (current == self.smoothEntry):
@@ -134,6 +146,8 @@ class VideoEnhancementSetup(ConfigListScreen, Screen):
 
 	def keyRight(self):
 		current = self["config"].getCurrent()
+		if current is None:
+			return
 		if current == self.splitEntry or current == self.color_spaceEntry:
 			ConfigListScreen.keyRight(self)
 		elif (current == self.scaler_vertical_dejaggingEntry) or (current == self.smoothEntry):
@@ -269,12 +283,6 @@ class VideoEnhancementSetup(ConfigListScreen, Screen):
 		for x in self.onChangedEntry:
 			x()
 
-	def getCurrentEntry(self):
-		return self["config"].getCurrent()[0]
-
-	def getCurrentValue(self):
-		return str(self["config"].getCurrent()[1].getText())
-
 	def createSummary(self):
 		from Screens.Setup import SetupSummary
 		return SetupSummary
@@ -341,14 +349,8 @@ class VideoEnhancementPreview(ConfigListScreen, Screen):
 
 	def selectionChanged(self):
 		self["introduction"].setText(_("Current value: ") + self.getCurrentValue())
-		try:
-			max_avail = self["config"].getCurrent()[1].max
-			if max_avail == 255:
-				self.isStepSlider = True
-			else:
-				self.isStepSlider = False
-		except AttributeError:
-			print("no max value")
+		current = self["config"].getCurrent(full=False)
+		self.isStepSlider = current is not None and getattr(current[1], "max", None) == 255
 
 	def keyLeft(self):
 		if self.isStepSlider is True:
@@ -386,28 +388,25 @@ class VideoEnhancementPreview(ConfigListScreen, Screen):
 			x()
 		self.selectionChanged()
 
-	def getCurrentEntry(self):
-		return self["config"].getCurrent()[0]
-
-	def getCurrentValue(self):
-		return str(self["config"].getCurrent()[1].getText())
-
 	def createSummary(self):
 		from Screens.Setup import SetupSummary
 		return SetupSummary
 
 
 def videoEnhancementSetupMain(session, **kwargs):
-	session.open(VideoEnhancementSetup)
+	if videoEnhancementAvailable():
+		session.open(VideoEnhancementSetup)
+	else:
+		session.open(MessageBox, _("Video enhancement is not supported by this receiver."), MessageBox.TYPE_INFO)
 
 
 def startSetup(menuid):
-	if menuid != "video_menu":
+	if menuid != "video_menu" or not videoEnhancementAvailable():
 		return []
 	return [(_("Video enhancement setup"), videoEnhancementSetupMain, "videoenhancement_setup", 5)]
 
 
 def Plugins(**kwargs):
-	if config.usage.setup_level.index >= 2 and os_path.exists("/proc/stb/vmpeg/0/pep_apply"):
+	if config.usage.setup_level.index >= 2 and videoEnhancementAvailable():
 		return PluginDescriptor(name=_("Video enhancement setup"), description=_("Advanced video enhancement setup"), where=PluginDescriptor.WHERE_MENU, needsRestart=False, fnc=startSetup)
 	return []
