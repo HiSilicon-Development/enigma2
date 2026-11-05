@@ -35,7 +35,7 @@ def checkFstabReservesMediaHDD(lines):
 	return False
 
 def readFile(filename):
-	with open(filename) as fd:
+	with open(filename, encoding="utf-8", errors="replace") as fd:
 		data = fd.read().strip()
 	return data
 
