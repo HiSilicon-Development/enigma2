@@ -1,5 +1,5 @@
 from Components.ActionMap import HelpableActionMap
-from Components.config import ConfigSelection, ConfigSubsection, config
+from Components.config import ConfigSelection, ConfigSubsection, config, configfile
 from Components.International import international
 from Components.Label import Label
 from Components.Opkg import OpkgComponent
@@ -261,15 +261,24 @@ class LocaleSelection(Screen):
 				self.session.open(TryQuitMainloop, retvalue=QUIT_RESTART)
 			self.close()
 
+		entries = (config.misc.locale, config.misc.language, config.misc.country, config.osd.language)
+		previous = [(entry, entry.value, entry.saved_value, entry.loadValue) for entry in entries]
 		config.misc.locale.value = self.currentLocale
 		language, country = international.splitLocale(self.currentLocale)
 		config.misc.language.value = language
 		config.misc.country.value = country
-		config.misc.locale.save()
-		config.misc.language.save()
-		config.misc.country.save()
 		config.osd.language.value = self.currentLocale  # This setting is now deprecated but retained for plugins.
-		config.osd.language.save()
+		try:
+			for entry in entries:
+				entry.save()
+			configfile.save()
+		except OSError as error:
+			for entry, value, savedValue, loadValue in previous:
+				entry.saved_value = savedValue
+				entry.loadValue = loadValue
+				entry.value = value
+			self.session.open(MessageBox, _("Unable to save settings: %s") % error, type=MessageBox.TYPE_ERROR)
+			return
 		international.activateLocale(self.currentLocale, runCallbacks=True)
 		if not self.inWizard and self.currentLocale != self.initialLocale:
 			self.session.openWithCallback(keySaveCallback, MessageBox, _("Restart GUI now to start using the new locale/language?"), default=True, type=MessageBox.TYPE_YESNO, windowTitle=self.getTitle())
