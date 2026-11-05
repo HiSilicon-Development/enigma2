@@ -1381,6 +1381,9 @@ class AVSwitch:
 def InitiVideomodeHotplug(**kwargs):
 	global hotplug
 	hotplug = VideomodeHotplug()
+	if HISTB:
+		from Components.HistbVideoHotplug import HistbVideoHotplug
+		hotplug.monitor = HistbVideoHotplug(avSwitch)
 
 
 class VideomodeHotplug:
