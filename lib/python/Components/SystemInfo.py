@@ -3,7 +3,7 @@ from binascii import hexlify
 from glob import glob
 from hashlib import md5
 from locale import format_string
-from os import listdir, readlink, stat, uname
+from os import X_OK, access, listdir, readlink, stat, uname
 from os.path import basename, exists, isfile, islink, join
 from platform import libc_ver
 from re import fullmatch, search
@@ -710,7 +710,7 @@ BoxInfo.setItem("WakeOnLAN", fileCheck("/proc/stb/power/wol") or fileCheck("/pro
 BoxInfo.setItem("WakeOnLANType", getWakeOnLANType(BoxInfo.getItem("WakeOnLAN")))
 BoxInfo.setItem("XcoreVFD", MODEL in ("xc7346", "xc7439"))
 BoxInfo.setItem("ZapMode", fileCheck("/proc/stb/video/zapmode") or fileCheck("/proc/stb/video/zapping_mode"))
-BoxInfo.setItem("DisplaySetup", MODEL not in ("dreamone",))
+BoxInfo.setItem("DisplaySetup", MODEL not in ("dreamone",) and (BoxInfo.getItem("distro") != "debian" or BoxInfo.getItem("FrontpanelDisplay")))
 BoxInfo.setItem("DM9X0", MODEL in ("dm900", "dm920"))
 
 
@@ -718,7 +718,9 @@ BoxInfo.setItem("DM9X0", MODEL in ("dm900", "dm920"))
 BoxInfo.setItem("ConfigDisplay", BoxInfo.getItem("FrontpanelDisplay") and DISPLAYTYPE not in ("7segment",))
 BoxInfo.setItem("dFlash", exists("/usr/lib/enigma2/python/Plugins/Extensions/dFlash"))
 BoxInfo.setItem("dBackup", not BoxInfo.getItem("dFlash") and exists("/usr/lib/enigma2/python/Plugins/Extensions/dBackup"))
-BoxInfo.setItem("ImageBackup", not BoxInfo.getItem("dFlash") and not BoxInfo.getItem("dBackup"))
+BoxInfo.setItem("ImageBackup", not BoxInfo.getItem("dFlash") and not BoxInfo.getItem("dBackup") and bool(MTDROOTFS and BoxInfo.getItem("mtdkernel")))
+BoxInfo.setItem("FlashOnline", access("/usr/bin/ofgwrite", X_OK) and bool(MTDROOTFS and BoxInfo.getItem("mtdkernel")))
+BoxInfo.setItem("OpkgAvailable", access("/usr/bin/opkg", X_OK))
 
 BoxInfo.setMutableItem("SeekStatePlay", False)
 BoxInfo.setMutableItem("StatePlayPause", False)
