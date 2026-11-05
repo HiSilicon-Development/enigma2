@@ -28,12 +28,12 @@ def getBoxProc():
 	elif isfile("/proc/boxtype"):
 		procmodel = fileReadLine("/proc/boxtype", "unknown", source=MODULE_NAME)
 	elif isfile("/proc/device-tree/model"):
-		procmodel = fileReadLine("/proc/device-tree/model", "unknown", source=MODULE_NAME).strip()[0:12]
+		procmodel = fileReadLine("/proc/device-tree/model", "unknown", source=MODULE_NAME)
 	elif isfile("/sys/firmware/devicetree/base/model"):
 		procmodel = fileReadLine("/sys/firmware/devicetree/base/model", "unknown", source=MODULE_NAME)
 	else:
 		procmodel = fileReadLine("/proc/stb/info/model", "unknown", source=MODULE_NAME)
-	return procmodel.strip().lower()
+	return procmodel.rstrip("\0\n").strip().lower()
 
 
 def getHWSerial():

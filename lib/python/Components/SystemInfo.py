@@ -1,19 +1,18 @@
 from ast import literal_eval
-from binascii import hexlify
 from glob import glob
 from hashlib import md5
 from locale import format_string
-from os import X_OK, access, listdir, readlink, stat, uname
+from os import X_OK, access, listdir, readlink, uname
 from os.path import basename, exists, isfile, islink, join
-from platform import libc_ver
+from platform import freedesktop_os_release, libc_ver
 from re import fullmatch, search
 from sys import version as pyversion
-from time import localtime, strftime
 
 from enigma import Misc_Options, eDBoxLCD, eDVBCIInterfaces, eDVBCSAEngine, eDVBResourceManager, eGetEnigmaDebugLvl, getE2Rev, getOARev
 
 from Tools.Directories import SCOPE_LIBDIR, SCOPE_SKINS, fileCheck, fileExists, fileHas, fileReadLine, fileReadLines, isPluginInstalled, pathExists, resolveFilename
 from Tools.MultiBoot import MultiBoot
+from Tools.ServiceAction import getSystemdSoftcamUnit
 
 MODULE_NAME = __name__.split(".")[-1]
 SOFTCAM = "/etc/init.d/softcam"
@@ -155,6 +154,11 @@ class BoxInformation:  # To maintain data integrity class variables should not b
 				cpuSpeedMhz = float(line[1])
 			elif line[0] == "processor":
 				cpuCount += 1
+		if not processor:
+			for compatible in fileReadLine("/proc/device-tree/cpus/cpu@0/compatible", default="", source=MODULE_NAME).split("\0"):
+				if compatible.startswith("arm,cortex-"):
+					processor = "Cortex-" + compatible.split("cortex-", 1)[1].upper()
+					break
 		if not cpuCount:
 			cpuCount = len(glob("/sys/devices/system/cpu/cpu[0-9]*"))
 		if not cpuCount:
@@ -167,9 +171,10 @@ class BoxInformation:  # To maintain data integrity class variables should not b
 				cpuSpeedMhz = int(cpuSpeed) / 1000
 			else:
 				try:
-					cpuSpeedMhz = int(int(hexlify(open("/sys/firmware/devicetree/base/cpus/cpu@0/clock-frequency", "rb").read()), 16) / 100000000) * 100
-				except Exception:
-					cpuSpeedMhz = 1500
+					with open("/sys/firmware/devicetree/base/cpus/cpu@0/clock-frequency", "rb") as clockFile:
+						cpuSpeedMhz = int.from_bytes(clockFile.read(), "big") / 1000000
+				except (OSError, ValueError):
+					pass
 		temperature = None
 		if isfile("/proc/stb/fp/temp_sensor_avs"):
 			temperature = fileReadLine("/proc/stb/fp/temp_sensor_avs", default=None, source=MODULE_NAME)
@@ -188,10 +193,10 @@ class BoxInformation:  # To maintain data integrity class variables should not b
 				if "temperature = " in line:
 					temperature = int(line.split("temperature = ")[1].split()[0])
 					# break  # Without this break the code returns the last line containing the string!
-		cpuSpeedStr = _("%s GHz") % format_string("%.1f", cpuSpeedMhz / 1000) if cpuSpeedMhz and cpuSpeedMhz >= 1000 else _("%d MHz") % int(cpuSpeedMhz)
+		cpuSpeedStr = (_("%s GHz") % format_string("%.1f", cpuSpeedMhz / 1000) if cpuSpeedMhz >= 1000 else _("%d MHz") % int(cpuSpeedMhz)) if cpuSpeedMhz else _("Unknown")
 		if temperature:
 			temperature = f"{format_string("%.1f", temperature) if isinstance(temperature, float) else temperature}{DEGREE}C"
-		return (processor, cpuSpeedStr, ngettext("%d core", "%d cores", cpuCount) % cpuCount, temperature or "")
+		return (processor or _("Unknown"), cpuSpeedStr, ngettext("%d core", "%d cores", cpuCount) % cpuCount, temperature or "")
 
 	def getSystemTemperature(self):
 		if isfile("/proc/stb/sensors/temp0/value"):
@@ -235,7 +240,7 @@ class BoxInformation:  # To maintain data integrity class variables should not b
 		return result
 
 	def getCPUBrand(self):
-		socFamily = self.getItem("socfamily")
+		socFamily = self.getItem("socfamily") or ""
 		if self.getItem("AmlogicFamily"):
 			result = _("Amlogic")
 		elif self.getItem("HiSilicon"):
@@ -301,16 +306,10 @@ class BoxInformation:  # To maintain data integrity class variables should not b
 		return result
 
 	def getKernelVersionString(self):
-		version = fileReadLine("/proc/version", default="", source=MODULE_NAME)
-		return version.split(" ", 4)[2].split("-", 2)[0] if version else _("Unknown")
+		return uname().release
 
 	def getFlashDateString(self):
-		try:
-			localTime = localtime(stat("/home").st_ctime)
-			result = strftime(_("%Y-%m-%d"), localTime) if localTime.tm_year >= 2011 else _("Unknown")
-		except Exception:
-			result = _("Unknown")
-		return result
+		return self.getItem("flashdate") or _("Unknown")
 
 	def getGlibcVersion(self):
 		try:
@@ -340,14 +339,54 @@ class BoxInformation:  # To maintain data integrity class variables should not b
 
 	def getBuildDateString(self):
 		version = fileReadLine("/etc/version", default="", source=MODULE_NAME)
-		return f"{version[:4]}-{version[4:6]}-{version[6:8]}" if version else _("Unknown")
+		if not fullmatch(r"\d{8}.*", version):
+			version = str(self.getItem("compiledate") or "")
+		return f"{version[:4]}-{version[4:6]}-{version[6:8]}" if fullmatch(r"\d{8}.*", version) else _("Unknown")
 
 	def getUpdateDateString(self):
 		build = self.getItem("compiledate")
 		return f"{build[:4]}-{build[4:6]}-{build[6:]}" if build and build.isdigit() else _("Unknown")
 
-	def getVersionFromOpkg(self, fileName):
-		return next((line[9:].split("+")[0] for line in fileReadLines(f"/var/lib/opkg/info/{fileName}.control", default=[], source=MODULE_NAME) if line.startswith("Version:")), _("Not Installed"))
+	def getPackageVersion(self, packageName):
+		version = next((line[9:].strip() for line in fileReadLines(f"/var/lib/opkg/info/{packageName}.control", default=[], source=MODULE_NAME) if line.startswith("Version:")), None)
+		if version:
+			return version
+		try:
+			with open("/var/lib/dpkg/status", encoding="utf-8", errors="replace") as statusFile:
+				package = {}
+				for line in statusFile:
+					if not line.strip():
+						if package.get("Package") == packageName and package.get("Status") == "install ok installed":
+							return package.get("Version") or _("Unknown")
+						package = {}
+					elif line.startswith(("Package:", "Status:", "Version:")):
+						key, value = line.split(":", 1)
+						package[key] = value.strip()
+				if package.get("Package") == packageName and package.get("Status") == "install ok installed":
+					return package.get("Version") or _("Unknown")
+		except OSError:
+			pass
+		return _("Not Installed")
+
+	def getOSVersionString(self):
+		try:
+			osRelease = freedesktop_os_release()
+		except OSError:
+			return self.getItem("oe") or _("Unknown")
+		name = osRelease.get("PRETTY_NAME") or osRelease.get("NAME") or _("Unknown")
+		fullVersion = osRelease.get("DEBIAN_VERSION_FULL")
+		return f"{name} [{fullVersion}]" if fullVersion and fullVersion not in name else name
+
+	def getApplicationVersionString(self):
+		for packageName in ("enigma2-hi3798cv200", "enigma2"):
+			version = self.getPackageVersion(packageName)
+			if version != _("Not Installed"):
+				return version
+		return self.getItem("applicationversion") or _("Unknown")
+
+	def getDeviceModelString(self):
+		model = fileReadLine("/proc/device-tree/model", default="", source=MODULE_NAME).rstrip("\0\n").strip()
+		return model or self.getItem("displaymodel") or _("Unknown")
 
 
 BoxInfo = BoxInformation()
@@ -387,7 +426,7 @@ MACHINEBUILD = BoxInfo.getItem("machinebuild")
 
 
 def getBoxDisplayName():  # This function returns a tuple like ("BRANDNAME", "BOXNAME")
-	return (DISPLAYBRAND, DISPLAYMODEL)
+	return (DISPLAYBRAND or "", BoxInfo.getDeviceModelString())
 
 
 # Parse the boot commandline.
@@ -423,7 +462,7 @@ def getRCFile(ext):
 
 
 def getKernelVersion():  # Version of the package of the running kernel, with its git revision when it is built from git.
-	result = BoxInfo.getItem("kernel")
+	result = uname().release
 	version = next((line[9:].strip() for line in fileReadLines(f"/var/lib/opkg/info/kernel-image-{uname().release}.control", default=[], source=MODULE_NAME) if line.startswith("Version:")), "")
 	if version:
 		parts = version.split(":", 1)[-1].rsplit("-", 1)[0].split("+")
@@ -443,8 +482,18 @@ def getChipsetString():
 	elif MODEL in ("dreamone", "dreamtwo"):
 		chipset = "S922X"
 	else:
-		chipset = fileReadLine("/proc/stb/info/chipset", default=_("Undefined"), source=MODULE_NAME)
-		chipset = chipset.lower().replace("\n", "").replace("bcm", "").replace("brcm", "").replace("sti", "")
+		chipset = fileReadLine("/proc/stb/info/chipset", default="", source=MODULE_NAME)
+		if not chipset or chipset.strip().lower() in ("unknown", "undefined"):
+			try:
+				with open("/proc/device-tree/compatible", "rb") as compatibleFile:
+					compatibles = compatibleFile.read().decode("ascii", errors="replace").split("\0")
+			except OSError:
+				compatibles = []
+			for compatible in compatibles:
+				if compatible.startswith(("hisilicon,", "brcm,", "amlogic,")):
+					chipset = compatible.split(",", 1)[1]
+					break
+		chipset = chipset.lower().strip().replace("bcm", "").replace("brcm", "").replace("sti", "") if chipset else _("Unknown")
 	return chipset
 
 
@@ -662,6 +711,7 @@ BoxInfo.setItem("HasSDswap", MODEL in ("h9", "i55plus") and pathExists("/dev/mmc
 BoxInfo.setItem("HaveCISSL", fileCheck("/etc/ssl/certs/customer.pem") and fileCheck("/etc/ssl/certs/device.pem"))
 BoxInfo.setItem("HaveID", fileCheck("/etc/.id"))
 BoxInfo.setItem("HAVEINITCAM", hasInitCam())
+BoxInfo.setItem("SoftcamSetupAvailable", BoxInfo.getItem("HAVEINITCAM") or (BoxInfo.getItem("distro") == "debian" and getSystemdSoftcamUnit() is not None))
 BoxInfo.setItem("HAVEINITCARDSERVER", hasInitCardServer())
 BoxInfo.setItem("HasSoftCSA", eDVBCSAEngine.isAvailable())
 BoxInfo.setItem("HaveTouchSensor", MACHINEBUILD in ("dm520", "dm525", "dm900", "dm920"))

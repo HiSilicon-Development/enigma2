@@ -1,8 +1,8 @@
 from errno import ENOMEDIUM
 from functools import total_ordering
 from glob import glob
-from os import listdir, lstat, mkdir, remove, statvfs, system, walk
-from os.path import abspath, dirname, exists, isfile, islink, ismount, join, realpath
+from os import listdir, lstat, major, minor, mkdir, remove, stat, statvfs, system, walk
+from os.path import abspath, basename, dirname, exists, isfile, islink, ismount, join, realpath
 from re import search, sub
 from time import sleep, time
 
@@ -35,7 +35,7 @@ def checkFstabReservesMediaHDD(lines):
 	return False
 
 def readFile(filename):
-	with open(filename, encoding="utf-8", errors="replace") as fd:
+	with open(filename, encoding="utf-8", errors="backslashreplace") as fd:
 		data = fd.read().strip()
 	return data
 
@@ -149,6 +149,8 @@ class Harddisk:
 			self.timer.callback.remove(self.runIdle)
 
 	def bus(self):
+		if self.device.startswith("mmcblk") and readFile(self.sysfsPath("device/type")) == "MMC":
+			return _("Internal") if readFile(self.sysfsPath("removable")) == "0" else _("External")
 		ret = _("External")
 		internal = False
 		if "sdhci" in self.phys_path:
@@ -222,21 +224,31 @@ class Harddisk:
 		return numPart
 
 	def mountDevice(self):
+		self.mount_device = None
+		self.mount_path = None
 		for parts in getProcMountsNew():
-			if realpath(parts[0]).startswith(self.dev_path):
+			if self.isMountDevice(parts):
 				self.mount_device = parts[0]
 				self.mount_path = parts[1]
 				return parts[1]
 
 	def enumMountDevices(self):
 		for parts in getProcMountsNew():
-			if realpath(parts[0]).startswith(self.dev_path):
+			if self.isMountDevice(parts):
 				yield parts[1]
 
 	def findMount(self):
-		if self.mount_path is None:
-			return self.mountDevice()
-		return self.mount_path
+		return self.mountDevice()
+
+	def isMountDevice(self, parts):
+		device = basename(realpath(parts[0]))
+		if not exists(join("/sys/class/block", device)):
+			try:
+				dev = stat(parts[1]).st_dev
+				device = basename(realpath(f"/sys/dev/block/{major(dev)}:{minor(dev)}"))
+			except OSError:
+				return False
+		return device == self.device or bool(search(rf"^{self.device}{'p' if self.device.startswith('mmcblk') else ''}\d+$", device))
 
 	def unmount(self):
 		dev = self.mountDevice()
@@ -485,6 +497,9 @@ class HarddiskManager:
 
 	def getBlockDevInfo(self, blockdev):
 		devpath = join("/sys/block", blockdev)
+		# eMMC hardware boot/RPMB areas are not user storage disks.
+		if search(r"^mmcblk\d+(?:boot\d+|rpmb)$", blockdev):
+			return False, True, False, False, [], False
 		error = False
 		removable = False
 		blacklisted = False
@@ -513,7 +528,7 @@ class HarddiskManager:
 				for partition in listdir(devpath):
 					if partition[0:len(blockdev)] != blockdev:
 						continue
-					if dev == 179 and not search(r"mmcblk\dp\d+", partition):
+					if dev == 179 and not search(r"^mmcblk\d+p\d+$", partition):
 						continue
 					partitions.append(partition)
 			else:
@@ -621,9 +636,9 @@ class HarddiskManager:
 
 	def enumerateBlockDevices(self):
 		print("[Harddisk] Enumerating block devices.")
-		black = BoxInfo.getItem("mtdblack")
+		blacklist = ("ram", "rom", "loop", "zram", "md0") + tuple((BoxInfo.getItem("mtdblack") or "").split())
 		for blockdev in listdir("/sys/block"):
-			if blockdev.startswith(("ram", "rom", "loop", "zram", "md0", black)):
+			if blockdev.startswith(blacklist):
 				continue
 			# print(f"[Harddisk] Enumerating block device '{blockdev}'.")
 			error, blacklisted, removable, is_cdrom, partitions, medium_found = self.addHotplugPartition(blockdev)

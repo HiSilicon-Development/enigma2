@@ -81,10 +81,10 @@ getGccVersion = BoxInfo.getGccVersion
 getPythonVersionString = BoxInfo.getPythonVersionString
 getVersionString = BoxInfo.getImageVersionString
 getImageVersionString = BoxInfo.getImageVersionString
-getEnigmaVersionString = BoxInfo.getImageVersionString
+getEnigmaVersionString = BoxInfo.getApplicationVersionString
 getBuildDateString = BoxInfo.getBuildDateString
 getUpdateDateString = BoxInfo.getUpdateDateString
-getVersionFromOpkg = BoxInfo.getVersionFromOpkg
+getPackageVersion = BoxInfo.getPackageVersion
 
 # For modules that do "from About import about"
 about = modules[__name__]

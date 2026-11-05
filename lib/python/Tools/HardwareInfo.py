@@ -55,7 +55,4 @@ class HardwareInfo:
 		return BoxInfo.getItem("displaymodel")
 
 	def linux_kernel(self):
-		try:
-			return open("/proc/version").read().split(' ', 4)[2].split('-', 2)[0]
-		except Exception:
-			return "unknown"
+		return BoxInfo.getKernelVersionString()

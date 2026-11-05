@@ -8,7 +8,7 @@ from re import search
 from subprocess import PIPE, Popen
 from urllib.request import urlopen
 
-from enigma import eAVControl, eDVBCSAEngine, eDVBFrontendParametersSatellite, eDVBResourceManager, eGetEnigmaDebugLvl, eInputDeviceManager, eRTSPStreamServer, eServiceCenter, eServiceReference, eStreamServer, eTimer, getDesktop, getE2Rev, getGStreamerVersionString, iFrontendInformation, iPlayableService, iServiceInformation
+from enigma import eAVControl, eDVBCSAEngine, eDVBFrontendParametersSatellite, eDVBResourceManager, eGetEnigmaDebugLvl, eInputDeviceManager, eRTSPStreamServer, eServiceCenter, eServiceReference, eStreamServer, eTimer, getDesktop, getGStreamerVersionString, iFrontendInformation, iPlayableService, iServiceInformation
 
 from ServiceReference import ServiceReference
 from Components.About import about
@@ -41,8 +41,7 @@ from Tools.Transponder import ConvertToHumanReadable
 
 MODULE_NAME = __name__.split(".")[-1]
 
-DISPLAY_BRAND = BoxInfo.getItem("displaybrand")
-DISPLAY_MODEL = BoxInfo.getItem("displaymodel")
+DISPLAY_BRAND, DISPLAY_MODEL = getBoxDisplayName()
 MACHINE_BUILD = BoxInfo.getItem("machinebuild")
 MODEL = BoxInfo.getItem("model")
 BoxInfo.setItem("InformationDistributionWelcome", [_("Welcome to %s") % BoxInfo.getItem("displaydistro", "Enigma2")])
@@ -650,18 +649,10 @@ class InformationDistribution(InformationBase):
 		info.append(self.formatLine("S", _("Enigma2 information")))
 		if self.extraSpacing:
 			info.append("")
-		enigmaVersion = str(BoxInfo.getItem("imageversion"))
-		enigmaVersion = enigmaVersion.rsplit("-", enigmaVersion.count("-") - 2)
-		if len(enigmaVersion) == 3:
-			enigmaVersion = f"{enigmaVersion[0]} ({enigmaVersion[2]}-{enigmaVersion[1].capitalize()})"
-		elif len(enigmaVersion) == 1:
-			enigmaVersion = f"{enigmaVersion[0]}"
-		else:
-			enigmaVersion = f"{enigmaVersion[0]} ({enigmaVersion[1].capitalize()})"
+		enigmaVersion = BoxInfo.getApplicationVersionString()
 		info.append(self.formatLine("P1", _("%s version") % "Enigma2", enigmaVersion))
-		info.append(self.formatLine("P1", _("Enigma2 revision"), getE2Rev()))
-		compileDate = str(BoxInfo.getItem("compiledate"))
-		info.append(self.formatLine("P1", _("Last update"), formatDate(f"{compileDate[:4]}{compileDate[4:6]}{compileDate[6:]}")))
+		info.append(self.formatLine("P1", _("Enigma2 revision"), BoxInfo.getItem("sourcecommit") or _("Unknown")))
+		info.append(self.formatLine("P1", _("Last update"), formatDate(about.getUpdateDateString())))
 		info.append(self.formatLine("P1", _("Last flash"), formatDate(about.getFlashDateString())))
 		info.append(self.formatLine("P1", _("Enigma2 (re)starts"), config.misc.startCounter.value))
 		info.append(self.formatLine("P1", _("Enigma2 debug level"), eGetEnigmaDebugLvl()))
@@ -675,6 +666,7 @@ class InformationDistribution(InformationBase):
 		if self.extraSpacing:
 			info.append("")
 		info.append(self.formatLine("P1", _("Distribution"), BoxInfo.getItem("displaydistro")))
+		info.append(self.formatLine("P1", _("Operating system"), BoxInfo.getOSVersionString()))
 		info.append(self.formatLine("P1", _("Distribution build"), formatDate(BoxInfo.getItem("imagebuild"))))
 		info.append(self.formatLine("P1", _("Distribution build date"), formatDate(about.getBuildDateString())))
 		info.append(self.formatLine("P1", _("Distribution architecture"), BoxInfo.getItem("architecture")))
@@ -693,12 +685,12 @@ class InformationDistribution(InformationBase):
 		versions = [
 			("GCC", about.getGccVersion()),
 			("Glibc", about.getGlibcVersion()),
-			("OpenSSL", about.getVersionFromOpkg("openssl")),
+			("OpenSSL", about.getPackageVersion("openssl")),
 			("Python", about.getPythonVersionString()),
 			("Rust", BoxInfo.getItem("rust")),
-			("Samba", about.getVersionFromOpkg("samba")),
+			("Samba", about.getPackageVersion("samba")),
 			("GStreamer", getGStreamerVersionString().replace("GStreamer ", "")),
-			("FFmpeg", about.getVersionFromOpkg("ffmpeg"))
+			("FFmpeg", about.getPackageVersion("ffmpeg"))
 		]
 		if eDVBCSAEngine.isAvailable():
 			libName = eDVBCSAEngine.getLibraryName()
@@ -1238,7 +1230,7 @@ class InformationReceiver(InformationBase):
 		info.append(self.formatLine("P1", _("Receiver name"), "%s %s" % getBoxDisplayName()))
 		info.append(self.formatLine("P1", _("Build Brand"), BoxInfo.getItem("brand")))
 		platform = BoxInfo.getItem("platform")
-		info.append(self.formatLine("P1", _("Build Model"), MODEL))
+		info.append(self.formatLine("P1", _("Compatibility profile") if BoxInfo.getItem("distro") == "debian" else _("Build Model"), MODEL))
 		if platform != MODEL:
 			info.append(self.formatLine("P1", _("Platform"), platform))
 		procModel = getBoxProc()
@@ -1289,6 +1281,7 @@ class InformationReceiver(InformationBase):
 		if ramTemp:
 			info.append(self.formatLine("P1", _("RAM temperature"), ramTemp))
 		info.append(self.formatLine("P1", _("CPU brand"), about.getCPUBrand()))
+		info.append(self.formatLine("P1", _("Chipset"), BoxInfo.getItem("ChipsetString") or _("Unknown")))
 		socFamily = BoxInfo.getItem("socfamily")
 		if socFamily:
 			info.append(self.formatLine("P1", _("SoC family"), socFamily))
@@ -1341,15 +1334,15 @@ class InformationReceiver(InformationBase):
 		info.append(self.formatLine("S", _("Driver and kernel information")))
 		if self.extraSpacing:
 			info.append("")
-		info.append(self.formatLine("P1", _("Drivers version"), formatDate(BoxInfo.getItem("driversdate"))))
-		info.append(self.formatLine("P1", _("Kernel version"), BoxInfo.getItem("KernelVersion")))
+		info.append(self.formatLine("P1", _("Drivers version"), formatDate(BoxInfo.getItem("driversdate") or about.getDriverInstalledDate())))
+		info.append(self.formatLine("P1", _("Kernel version"), about.getKernelVersionString()))
 		deviceId = fileReadLine("/proc/device-tree/amlogic-dt-id", source=MODULE_NAME)
 		if deviceId:
 			info.append(self.formatLine("P1", _("Device id"), deviceId))
 		givenId = fileReadLine("/proc/device-tree/le-dt-id", source=MODULE_NAME)
 		if givenId:
 			info.append(self.formatLine("P1", _("Given device id"), givenId))
-		if BoxInfo.getItem("HiSilicon"):
+		if BoxInfo.getItem("HiSilicon") and isfile("/usr/bin/opkg"):
 			info.append("")
 			info.append(self.formatLine("S", _("HiSilicon specific information")))
 			if self.extraSpacing:
