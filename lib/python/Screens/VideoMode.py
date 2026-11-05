@@ -53,7 +53,7 @@ class VideoSettings(Setup):
 		items = [
 			(_("Video output"), config.av.videoport, _("Configures which video output connector will be used."))
 		]
-		if port in ("HDMI", "YPbPr", "Scart-YPbPr") and not getAutoresPluginEnabled():
+		if port in config.av.videomode and port in ("HDMI", "YPbPr", "Scart-YPbPr") and not getAutoresPluginEnabled():
 			modes = avSwitch.readAvailableModes()
 			items.append((_("Automatic resolution"), config.av.autores, _("If enabled the output resolution of the receiver will try to match the resolution of the video contents resolution.")))
 			if config.av.autores.value in ("all", "hd"):
@@ -122,7 +122,7 @@ class VideoSettings(Setup):
 						items.append((_("%sShow 1080i as 1080p") % self.prevFhd, config.av.autores_1080i_deinterlace, _("Use Deinterlacing for 1080i Videosignal?"), "check_fhd"))
 					elif "1080p" not in modes and "1080p50" not in modes:
 						config.av.autores_1080i_deinterlace.value = False
-				if "2160p" in modes or "2160p30" in modes:
+				if any(mode.startswith("2160p") for mode in config.av.videomode[port].choices):
 					self.getVerifyVideomode(config.av.autores_mode_uhd, config.av.autores_rate_uhd)
 					items.extend((
 						(pgettext(_("Video output mode for UHD"), _("%sMode for UHD (up to 2160p)") % self.prevUhd), config.av.autores_mode_uhd[port], _("This option configures the video output mode (or resolution)."), "check_uhd"),
@@ -198,6 +198,9 @@ class VideoSettings(Setup):
 			setrate[configMode].value = configRate
 
 	def confirm(self, confirmed):
+		if config.av.videoport.value not in config.av.videomode:
+			self.createSetup()
+			return
 		if confirmed and BoxInfo.getItem("platform") == "hi3798cv200":
 			port = config.av.videoport.value
 			mode = config.av.videomode[port].value
@@ -239,6 +242,9 @@ class VideoSettings(Setup):
 	def grabLastGoodMode(self):
 		self.resetMode = 0
 		port = config.av.videoport.value
+		if port not in config.av.videomode:
+			self.lastGood = None
+			return
 		mode = config.av.videomode[port].value
 		rate = config.av.videorate[mode].value
 		self.lastGood = (port, mode, rate)
@@ -259,6 +265,11 @@ class VideoSettings(Setup):
 
 	def keySave(self):
 		port = config.av.videoport.value
+		if port not in config.av.videomode:
+			Setup.keySave(self)
+			return
+		if self.lastGood is None:
+			self.grabLastGoodMode()
 		mode = config.av.videomode[port].value
 		rate = config.av.videorate[mode].value
 		autoresSd = config.av.autores_sd.value
@@ -299,7 +310,7 @@ class VideoSettings(Setup):
 		return eAVControl.getInstance().getVideoMode("") or None
 
 	def changedEntry(self):
-		if config.av.autores_preview.value:
+		if config.av.autores_preview.value and config.av.videoport.value in config.av.videomode:
 			ConfigListScreen.changedEntry(self)
 			cur = self["config"].getCurrent()
 			cur = cur and len(cur) > 3 and cur[3]
@@ -511,6 +522,8 @@ class AutoVideoMode(Screen):
 	def VideoChangeDetect(self):
 		# Info: Auto resolution preview or save settings call this function with session = None / ~338, ~374.
 		global resolutionlabel
+		if config.av.videoport.value not in config.av.videomode:
+			return  # No sink: there is no configured timing to derive an output from.
 		avControl = eAVControl.getInstance()
 		configPort, configMode, configRes, configPol, configRate = self.getConfigVideomode(config.av.videomode, config.av.videorate)
 		configMode = configMode.replace("p30", "p")

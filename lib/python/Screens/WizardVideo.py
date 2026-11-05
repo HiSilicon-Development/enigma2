@@ -85,8 +85,6 @@ class WizardVideo(Wizard, ShowRemoteControl):
 		for modes in avSwitch.getModeList(self.port):
 			if modes[0] == mode:
 				for rate in modes[1]:
-					if rate == "auto" and not BoxInfo.getItem("have24hz"):
-						continue
 					if self.port == "DVI-PC":
 						# print("[WizardVideo] listModes DEBUG: rate='%s'." % rate)
 						if rate == "640x480":

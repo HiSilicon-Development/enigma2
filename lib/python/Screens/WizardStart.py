@@ -478,11 +478,12 @@ class WizardLanguage(Wizard, ShowRemoteControl):
 			elif "1080p" in preferred:
 				self.mode = "1080p"
 
-		if BoxInfo.getItem("platform") == "hi3798cv200" and "HDMI" in config.av.videomode:
-			# Do not overwrite a saved KMS timing with the legacy 720p probe.
-			self.mode = config.av.videomode["HDMI"].value
-			avSwitch.setConfiguredMode()
-			preferred = [self.mode]
+		if BoxInfo.getItem("platform") == "hi3798cv200":
+			# Do not overwrite a saved KMS timing or probe an absent sink.
+			if "HDMI" in config.av.videomode:
+				self.mode = config.av.videomode["HDMI"].value
+				avSwitch.setConfiguredMode()
+				preferred = [self.mode]
 		else:
 			self.setMode()
 
@@ -493,6 +494,8 @@ class WizardLanguage(Wizard, ShowRemoteControl):
 				print("[WizardLanguage] DEBUG start resolutionTimer")
 
 	def setMode(self):
+		if BoxInfo.getItem("platform") == "hi3798cv200" and "HDMI" not in config.av.videomode:
+			return
 		print(f"[WizardLanguage] DEBUG setMode {self.mode}")
 		if self.mode in ("720p", "1080p") and not BoxInfo.getItem("AmlogicFamily"):
 			rate = "multi"
@@ -511,8 +514,6 @@ class WizardLanguage(Wizard, ShowRemoteControl):
 		for modes in avSwitch.getModeList("HDMI"):
 			if modes[0] == self.mode:
 				for rate in modes[1]:
-					if rate == "auto" and not BoxInfo.getItem("have24hz"):
-						continue
 					rates.append((rate, rate))
 		rates.sort(key=sortKey)
 		return rates[0][0]
