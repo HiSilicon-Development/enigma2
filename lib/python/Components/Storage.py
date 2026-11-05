@@ -5,7 +5,7 @@
 
 
 from glob import glob
-from os import listdir, mkdir, rmdir, unlink
+from os import listdir, major, minor, mkdir, rmdir, stat, unlink
 from os.path import exists, ismount, join, realpath
 from shutil import which
 from string import ascii_letters, digits
@@ -55,7 +55,17 @@ class StorageDevice():
 				self.mount_path = parts[1]
 				return parts[1]
 
+	def checkRootProtection(self):
+		rootDevice = stat("/").st_dev
+		targetDevice = stat(self.devicePoint).st_rdev
+		rootPath = realpath(f"/sys/dev/block/{major(rootDevice)}:{minor(rootDevice)}")
+		targetPath = realpath(f"/sys/dev/block/{major(targetDevice)}:{minor(targetDevice)}")
+		if rootPath == targetPath or rootPath.startswith(targetPath + "/"):
+			raise ValueError(_("The running root filesystem and its parent disk cannot be formatted or repartitioned."))
+
+
 	def createWipeJob(self, options=None):
+		self.checkRootProtection()
 		options = options or {}
 		uuids = options.get("uuids") or {}
 		debug = options.get("debug")
@@ -79,6 +89,7 @@ class StorageDevice():
 		return job
 
 	def createFormatJob(self, options):
+		self.checkRootProtection()
 		debug = options.get("debug")
 		fsType = options.get("fsType", "ext4")
 		label = options.get("label")
@@ -125,6 +136,7 @@ class StorageDevice():
 		return job
 
 	def createInitializeJob(self, options=None):
+		self.checkRootProtection()
 		options = options or {}
 		debug = options.get("debug")
 		partitions = options.get("partitions") or []
