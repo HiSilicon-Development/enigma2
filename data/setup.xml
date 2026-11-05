@@ -149,7 +149,7 @@
 		<item level="0" text="DVB CI Delay" description="Set DVB CI delay." requires="CommonInterfaceCIDelay">config.cimisc.dvbCiDelay</item>
 		<item level="0" text="CI Boot Delay" description="Set CI Boot delay.">config.cimisc.bootDelay</item>
 	</setup>
-	<setup key="Display" title="Display Settings" showOpenWebif="yes">
+	<setup key="Display" title="Display Settings" showOpenWebif="yes" requires="DisplaySetup">
 		<item level="0" text="Brightness And Contrast" />
 		<item level="0" text="Clone TV screen to LCD" description="Shows live TV or informations on LCD." requires="FBLCDDisplay" indent="1">config.lcd.fblcddisplay</item>
 		<item level="0" text="Brightness (Normal)" description="Configure the brightness level of the front panel display for normal operation." indent="1">config.lcd.bright</item>
@@ -617,7 +617,7 @@
 			<item level="0" text="Enable debug log" description="If enabled, a log will be kept of CEC protocol traffic. The log files are located with the other log files but named 'Enigma2-hdmicec-[date].log'." indent="1">config.hdmicec.debug</item>
 		</if>
 	</setup>
-	<setup key="HDMIRecord" title="HDMI Recording Settings" showOpenWebif="yes">
+	<setup key="HDMIRecord" title="HDMI Recording Settings" showOpenWebif="yes" requires="HDMIin">
 		<item level="0" text="Bitrate" description="Set the bitrate of the video encoder. Larger values improve the quality and also increases the file size.">config.hdmirecord.bitrate</item>
 		<item level="0" text="Width" description="The width of the picture. The input will be scaled to match this value.">config.hdmirecord.width</item>
 		<item level="0" text="Height" description="The height of the picture. The input will be scaled to match this value.">config.hdmirecord.height</item>
@@ -635,7 +635,7 @@
 	<setup key="Keyboard" title="Keyboard Settings" showOpenWebif="yes">
 		<item level="0" text="Keyboard" description="Select the type of keyboard connected to the %s %s.">config.inputDevices.keyboardsIndex</item>
 	</setup>
-	<setup key="LEDs" title="LED Settings" showOpenWebif="yes">
+	<setup key="LEDs" title="LED Settings" showOpenWebif="yes" requires="LEDColorControl">
 		<item level="1" text="LED Running color" description="Select the color of the front panel power LED when the receiver is Running. This option also allows the LED to be deactivated/turned off.">config.fp.led.default_color</item>
 		<item level="1" text="LED Running brightness" description="Select the brightness of the front panel LED when the receiver is Running.">config.fp.led.default_brightness</item>
 		<item level="1" text="LED Standby color" description="Select the color of the front panel power LED when the receiver is in Standby. This option also allows the LED to be deactivated/turned off.">config.fp.led.standby_color</item>
