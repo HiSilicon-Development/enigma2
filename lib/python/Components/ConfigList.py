@@ -481,9 +481,13 @@ class ConfigListScreen:
 		self["config"].handleKey(ActionKeys.NUMBER_0 + number, self.entryChanged)
 
 	def keySave(self):
-		for notifier in self.onSave:
-			notifier()
-		quitData = self.saveAll()
+		try:
+			for notifier in self.onSave:
+				notifier()
+			quitData = self.saveAll()
+		except OSError as error:
+			self.session.open(MessageBox, _("Unable to save settings: %s") % error, type=MessageBox.TYPE_ERROR)
+			return
 		if quitData:
 			self.session.openWithCallback(boundFunction(self.restartConfirm, quitValue=quitData[0]), MessageBox, quitData[1], default=True, type=MessageBox.TYPE_YESNO)
 		else:
@@ -494,18 +498,29 @@ class ConfigListScreen:
 			self.session.open(TryQuitMainloop, retvalue=quitValue)
 			self.close()
 
+	def getConfigList(self):
+		return self["config"].list
+
 	def saveAll(self):
 		quitData = ()
-		for item in self["config"].list:
-			if len(item) > 1:
+		items = [item for item in self.getConfigList() if len(item) > 1]
+		saved = [(item[1], item[1].saved_value, item[1].loadValue) for item in items]
+		try:
+			for item in items:
 				if item[1].isChanged():
 					itemText = item[0][0] if isinstance(item[0], tuple) else item[0]
-					if itemText.endswith("*"):
+					if itemText.endswith("*") and not quitData:
 						quitData = (QUIT_RESTART, _("Restart GUI now?"))
 					elif itemText.endswith("#"):
 						quitData = (QUIT_REBOOT, _("Reboot %s %s now?") % getBoxDisplayName())
 				item[1].save()
-		configfile.save()
+			configfile.save()
+		except OSError:
+			# Keep edited values for retry, but preserve the original cancel target.
+			for element, savedValue, loadValue in saved:
+				element.saved_value = savedValue
+				element.loadValue = loadValue
+			raise
 		return quitData
 
 	def addSaveNotifier(self, notifier):
@@ -528,7 +543,7 @@ class ConfigListScreen:
 		self.closeConfigList((True,))
 
 	def closeConfigList(self, closeParameters=()):
-		if self["config"].isChanged():
+		if any(item[1].isChanged() for item in self.getConfigList() if len(item) > 1):
 			self.closeParameters = closeParameters
 			self.session.openWithCallback(self.cancelConfirm, MessageBox, self.cancelMsg, default=False, type=MessageBox.TYPE_YESNO)
 		else:
@@ -537,7 +552,7 @@ class ConfigListScreen:
 	def cancelConfirm(self, result):
 		if not result:
 			return
-		for item in self["config"].list:
+		for item in self.getConfigList():
 			if len(item) > 1:
 				item[1].cancel()
 		if not hasattr(self, "closeParameters"):

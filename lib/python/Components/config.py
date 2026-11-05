@@ -2295,6 +2295,7 @@ class Config(ConfigSubsection):
 			rename(f"{filename}.writing", filename)
 		except OSError as err:
 			print(f"[Config] Error {err.errno}: Couldn't write '{filename}'!  ({err.strerror})")
+			raise
 
 
 class ConfigFile:

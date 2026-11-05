@@ -69,6 +69,7 @@ class Setup(ConfigListScreen, Screen, ProtectedScreen):
 			self.skinName.append("Setup%s" % setup)
 		self.skinName.append("Setup")
 		self.list = []
+		self.configItems = {}
 		xmlData = setupDom(self.setup, self.plugin)
 		allowDefault = False
 		for setup in xmlData.findall("setup"):
@@ -84,12 +85,20 @@ class Setup(ConfigListScreen, Screen, ProtectedScreen):
 		self.onLayoutFinish.append(self.layoutFinished)
 
 	def changedEntry(self):
-		if isinstance(self["config"].getCurrent()[1], (ConfigBoolean, ConfigSelection)):
+		if isinstance(self.getCurrentItem(), (ConfigBoolean, ConfigSelection)):
 			self.createSetup()
 		ConfigListScreen.changedEntry(self)
 
+	def getConfigList(self):
+		# Conditional rebuilds must not drop edited values from save/cancel.
+		for item in self["config"].list:
+			if len(item) > 1:
+				self.configItems[id(item[1])] = item
+		return list(self.configItems.values())
+
 	def createSetup(self, appendItems=None, prependItems=None):
 		oldList = self.list
+		self.getConfigList()
 		self.showDefaultChanged = False
 		self.graphicSwitchChanged = False
 		self.list = prependItems or []
