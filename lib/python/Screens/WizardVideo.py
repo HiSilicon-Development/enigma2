@@ -131,7 +131,8 @@ class WizardVideo(Wizard, ShowRemoteControl):
 			return False
 		# listRates already prefers multi, but only if all required rates are available.
 		self.rate = rates[0][0]
-		self.setVideoMode(self.port, mode, self.rate)
+		if not self.setVideoMode(self.port, mode, self.rate):
+			return False
 
 		if BoxInfo.getItem("machinebuild") == "gbquad4kpro" and mode.startswith("2160p"):  # Hack for GB QUAD 4K Pro
 			config.av.hdmicolordepth.value = "10bit"
@@ -149,31 +150,39 @@ class WizardVideo(Wizard, ShowRemoteControl):
 
 	def rateSelect(self, rate):
 		if any(item[0] == rate for item in self.listRates()):
-			self.setVideoMode(self.port, self.mode, rate)
-			return True
+			return self.setVideoMode(self.port, self.mode, rate)
 		return False
 
 	def setVideoMode(self, port, mode, rate):
 		# Selection changes, OK and entry into the next step can request the same mode.
 		videoMode = (port, mode, rate)
 		if videoMode != self.lastVideoMode:
-			avSwitch.setMode(port=port, mode=mode, rate=rate)
+			if not avSwitch.setMode(port=port, mode=mode, rate=rate):
+				return False
 			self.lastVideoMode = videoMode
+		return True
 
 	def keyNumberGlobal(self, number):
 		if number in (1, 2, 3):
-			if number == 1:
-				avSwitch.saveMode("HDMI", "720p", "multi")
-			elif number == 2:
-				avSwitch.saveMode("HDMI", "1080i", "multi")
-			elif number == 3:
-				avSwitch.saveMode("Scart", "Multi", "multi")
+			port, mode, rate = {1: ("HDMI", "720p", "multi"), 2: ("HDMI", "1080i", "multi"), 3: ("Scart", "Multi", "multi")}[number]
+			if not avSwitch.saveMode(port, mode, rate):
+				return
+			configfile.save()
 			avSwitch.setConfiguredMode()
 			self.close()
 		Wizard.keyNumberGlobal(self, number)
 
+	def markDone(self):
+		# Exiting the wizard confirms completion without selecting a new mode.
+		config.misc.videowizardenabled.value = False
+		config.misc.videowizardenabled.save()
+		configfile.save()
+
 	def saveWizardChanges(self):  # Called by wizardvideo.xml.
-		avSwitch.saveMode(self.port, self.mode, self.rate)
+		if not avSwitch.saveMode(self.port, self.mode, self.rate):
+			from Screens.MessageBox import MessageBox
+			self.session.open(MessageBox, _("The requested video mode was not applied. Settings were not saved."), MessageBox.TYPE_ERROR)
+			return False
 		# config.misc.wizardVideoEnabled.value = 0
 		# config.misc.wizardVideoEnabled.save()
 		config.misc.videowizardenabled.value = 0

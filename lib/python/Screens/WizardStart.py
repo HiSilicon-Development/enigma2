@@ -478,7 +478,13 @@ class WizardLanguage(Wizard, ShowRemoteControl):
 			elif "1080p" in preferred:
 				self.mode = "1080p"
 
-		self.setMode()
+		if BoxInfo.getItem("platform") == "hi3798cv200" and "HDMI" in config.av.videomode:
+			# Do not overwrite a saved KMS timing with the legacy 720p probe.
+			self.mode = config.av.videomode["HDMI"].value
+			avSwitch.setConfiguredMode()
+			preferred = [self.mode]
+		else:
+			self.setMode()
 
 		if not preferred:
 			ports = [port for port in avSwitch.getPortList() if avSwitch.isPortUsed(port)]

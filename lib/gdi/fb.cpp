@@ -1,3 +1,6 @@
+#ifdef HAVE_HISTB
+#include <lib/driver/histb_drm.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
@@ -204,6 +207,26 @@ int fbClass::showConsole(int state)
 int fbClass::SetMode(int nxRes, int nyRes, int nbpp)
 {
 	if (fbFd < 0) return -1;
+#ifdef HAVE_HISTB
+	// DRM fbdev owns the allocation. The skin selects GP0 source geometry,
+	// not a new fbdev/HDMI mode or a tightly packed replacement buffer.
+	fb_var_screeninfo native = {};
+	fb_fix_screeninfo nativeFix = {};
+	if (ioctl(fbFd, FBIOGET_VSCREENINFO, &native) < 0 || ioctl(fbFd, FBIOGET_FSCREENINFO, &nativeFix) < 0 ||
+		nbpp != 32 || native.bits_per_pixel != 32 || nxRes <= 0 || nyRes <= 0 ||
+		(unsigned int)nxRes > native.xres || (unsigned int)nyRes > native.yres ||
+		nativeFix.line_length < native.xres * 4 || uint64_t(nativeFix.line_length) * native.yres > nativeFix.smem_len ||
+		!histbOsdSetGeometry(nxRes, nyRes))
+	{
+		eWarning("[fb] cannot apply logical canvas %dx%dx%d; retaining previous geometry", nxRes, nyRes, nbpp);
+		return -1;
+	}
+	screeninfo = native;
+	xRes = nxRes; yRes = nyRes; bpp = nbpp;
+	stride = nativeFix.line_length;
+	m_number_of_pages = 1;
+	return 0;
+#endif
 #ifdef CONFIG_ION
 	/* unmap old framebuffer with old size */
 	if (lfb)
@@ -350,6 +373,15 @@ void fbClass::getMode(int &xres, int &yres, int &bpp)
 	xres = screeninfo.xres;
 	yres = screeninfo.yres;
 	bpp = screeninfo.bits_per_pixel;
+#ifdef HAVE_HISTB
+	auto &session = histbDrmSession();
+	std::lock_guard<std::mutex> lock(session.mutex);
+	if (session.sourceW && session.sourceH)
+	{
+		xres = session.sourceW;
+		yres = session.sourceH;
+	}
+#endif
 }
 
 int fbClass::setOffset(int off)

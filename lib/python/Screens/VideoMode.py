@@ -198,6 +198,14 @@ class VideoSettings(Setup):
 			setrate[configMode].value = configRate
 
 	def confirm(self, confirmed):
+		if confirmed and BoxInfo.getItem("platform") == "hi3798cv200":
+			port = config.av.videoport.value
+			mode = config.av.videomode[port].value
+			rate = config.av.videorate[mode].value
+			if avSwitch.mode_apply_failed or (config.av.autores.value == "disabled" and
+				eAVControl.getInstance().getVideoMode("") not in avSwitch.rates[mode][rate].values()):
+				confirmed = False
+				self.session.open(MessageBox, _("The requested video mode was not applied. The previous settings have been restored."), MessageBox.TYPE_ERROR)
 		if not confirmed:
 			if self.resetMode == 1:
 				config.av.videoport.value = self.lastGood[0]
@@ -277,6 +285,10 @@ class VideoSettings(Setup):
 		else:
 			self.resetMode = 0
 			Setup.keySave(self)
+			return
+		if avSwitch.mode_apply_failed:
+			self.confirm(False)
+			self.session.open(MessageBox, _("The requested video mode was rejected by the display hardware. The previous settings have been restored."), MessageBox.TYPE_ERROR)
 			return
 		if BoxInfo.getItem("machinebuild") == "gbquad4kpro" and mode.startswith("2160p"):  # Hack for GB QUAD 4K Pro!
 			config.av.hdmicolordepth.value = "10bit"
@@ -785,9 +797,11 @@ class AutoVideoMode(Screen):
 					elif writeMode in ("2160p24", "2160p30", "2160p60"):
 						writeMode = "2160p"
 				if writeMode in values:
-					avSwitch.setVideoModeDirect(writeMode)
-					print(f"[VideoMode] setMode - port: {configPort}, mode: {writeMode} (autoresTyp: '{autorestyp}')")
-					resolutionlabel["restxt"].setText(_("Video mode: %s") % writeMode)
+					if avSwitch.setVideoModeDirect(writeMode):
+						print(f"[VideoMode] setMode - port: {configPort}, mode: {writeMode} (autoresTyp: '{autorestyp}')")
+						resolutionlabel["restxt"].setText(_("Video mode: %s") % writeMode)
+					else:
+						resolutionlabel["restxt"].setText(_("Video mode: %s not available") % writeMode)
 				else:
 					print(f"[VideoMode] setMode - port: {configPort}, mode: {writeMode} is not available")
 					resolutionlabel["restxt"].setText(_("Video mode: %s not available") % writeMode)
@@ -809,7 +823,9 @@ class AutoVideoMode(Screen):
 def manualResolution(session):  # Ad hoc video mode selection from the extensions menu.
 	def manualResolutionCallback(choice):
 		if choice and choice[1] != oldMode:
-			avSwitch.setVideoModeDirect(choice[1])
+			if not avSwitch.setVideoModeDirect(choice[1]):
+				session.open(MessageBox, _("The requested video mode was rejected by the display hardware."), MessageBox.TYPE_ERROR)
+				return
 			session.openWithCallback(confirmCallback, MessageBox, _("Is this video mode ok?"), MessageBox.TYPE_YESNO, timeout=10, default=False)
 
 	def confirmCallback(answer):

@@ -168,8 +168,9 @@ def InitSkins():
 		loadSkin(USER_SKIN, scope=SCOPE_GUISKIN, desktop=getDesktop(GUI_SKIN_ID), screenID=GUI_SKIN_ID)
 	resolution = resolutions.get(GUI_SKIN_ID, (0, 0, 0))
 	if resolution[0] and resolution[1]:
-		gMainDC.getInstance().setResolution(resolution[0], resolution[1])
-		getDesktop(GUI_SKIN_ID).resize(eSize(resolution[0], resolution[1]))
+		dc = gMainDC.getInstance()
+		dc.setResolution(resolution[0], resolution[1])
+		getDesktop(GUI_SKIN_ID).resize(dc.getResolution())
 	runCallbacks = True  # noqa F841
 	# Load all XML templates.
 	reloadSkinTemplates()

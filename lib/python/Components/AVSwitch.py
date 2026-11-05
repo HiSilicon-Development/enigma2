@@ -12,6 +12,7 @@ from Tools.Directories import fileReadLine, fileWriteLine
 MODULE_NAME = __name__.split(".")[-1]
 AMLOGIC = BoxInfo.getItem("AmlogicFamily")
 MACHINEBUILD = BoxInfo.getItem("machinebuild")
+HISTB = BoxInfo.getItem("platform") == "hi3798cv200"
 
 config.av = ConfigSubsection()
 config.av.edid_override = ConfigYesNo(default=False)
@@ -1024,6 +1025,7 @@ class AVSwitchBase:
 		self.on_hotplug = CList()
 		self.current_mode = None
 		self.current_port = None
+		self.mode_apply_failed = False
 		print(f"[AVSwitch] getAvailableModes: '{eAVControl.getInstance().getAvailableModes()}'.")
 		self.is24hzAvailable()
 		self.readPreferredModes()
@@ -1226,7 +1228,17 @@ class AVSwitchBase:
 		eAVControl.getInstance().setInput(input, 1)
 
 	def setVideoModeDirect(self, mode):
-		eAVControl.getInstance().setVideoMode(mode)
+		avControl = eAVControl.getInstance()
+		previous = avControl.getVideoMode("") if HISTB else None
+		avControl.setVideoMode(mode)
+		actual = avControl.getVideoMode("") if HISTB else mode
+		self.mode_apply_failed = actual != mode
+		if self.mode_apply_failed:
+			print(f"[AVSwitch] Requested '{mode}', KMS reports '{actual}'; not saving this selection.")
+			if previous and actual != previous:
+				avControl.setVideoMode(previous)
+				print(f"[AVSwitch] Rollback KMS readback: '{avControl.getVideoMode('')}'.")
+		return not self.mode_apply_failed
 
 	def setMode(self, port, mode, rate, force=None):
 		print(f"[AVSwitch] Setting mode for port '{port}', mode '{mode}', rate '{rate}'.")
@@ -1243,7 +1255,14 @@ class AVSwitchBase:
 			mode24 = mode60
 			if force == 50:
 				mode24 = mode50
-		eAVControl.getInstance().setVideoModeMulti(mode50, mode60, mode24, 1)
+		if HISTB:
+			# KMS applies one timing, not three procfs rate slots. In particular,
+			# 25/30 Hz dictionary entries must reach the real modeset unchanged.
+			if not self.setVideoModeDirect(mode50):
+				return False
+		else:
+			eAVControl.getInstance().setVideoModeMulti(mode50, mode60, mode24, 1)
+			self.mode_apply_failed = False
 		if eAVControl.getInstance().hasVideoAxis():
 			limits = [int(x) for x in eAVControl.getInstance().getVideoAxis(mode).split()]
 			config.osd.dst_left.setChoices(default=limits[0], first=limits[0] - 255, last=limits[0] + 255)
@@ -1254,6 +1273,7 @@ class AVSwitchBase:
 		self.setColorFormat(config.av.colorformat.value)
 		self.current_mode = mode
 		self.current_port = port
+		return True
 
 	def setPolicy43(self, configElement):
 		eAVControl.getInstance().setPolicy43(configElement.value, 1)
@@ -1265,6 +1285,8 @@ class AVSwitchBase:
 		eAVControl.getInstance().setWSS(configElement.value, 1)
 
 	def saveMode(self, port, mode, rate):
+		if HISTB and not self.setMode(port, mode, rate):
+			return False
 		config.av.videoport.value = port
 		config.av.videoport.save()
 		if port in config.av.videomode:
@@ -1273,6 +1295,7 @@ class AVSwitchBase:
 		if mode in config.av.videorate:
 			config.av.videorate[mode].value = rate
 			config.av.videorate[mode].save()
+		return True
 
 
 # This is a dummy class to stop the constant re-instantiation of the AVSwitchBase class!

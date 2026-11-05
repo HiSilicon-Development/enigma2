@@ -55,6 +55,12 @@ gFBDC::gFBDC()
 	int bpp;
 	fb->getMode(xres, yres, bpp);
 
+#ifdef HAVE_HISTB
+	/* The boot fbdev may inherit UHD. Before a skin selects its logical
+	 * canvas, choose a supported GP0 source within that existing backing. */
+	if (xres >= 1920 && yres >= 1080) { xres = 1920; yres = 1080; }
+	else if (xres >= 1280 && yres >= 720) { xres = 1280; yres = 720; }
+#else
 	/* we can only use one of these three modes: */
 	if (!((xres == 720 && yres == 576)
 		|| (xres == 1280 && yres == 720)
@@ -64,6 +70,7 @@ gFBDC::gFBDC()
 		xres = 720;
 		yres = 576;
 	}
+#endif
 
 	surface.clut.data = 0;
 	setResolution(xres, yres); // default res
@@ -426,7 +433,16 @@ void gFBDC::setResolution(int xres, int yres, int bpp)
 	if (grc)
 		grc->lock();
 #endif
+#ifdef HAVE_HISTB
+	if (fb->SetMode(xres, yres, bpp) < 0)
+	{
+		if (m_pixmap) return;
+		eFatal("[gFBDC] cannot initialize native HiSTB OSD geometry");
+		return;
+	}
+#else
 	fb->SetMode(xres, yres, bpp);
+#endif
 
 	unsigned char *base_addr = fb->lfb;
 	unsigned long base_phys = fb->getPhysAddr();
@@ -439,7 +455,7 @@ void gFBDC::setResolution(int xres, int yres, int bpp)
 	surface.data = base_addr;
 
 	for (int y=0; y<yres; y++) // make whole screen transparent
-		memset(fb->lfb+ y * xres * 4, 0x00, xres * 4);
+		memset(fb->lfb + y * surface.stride, 0x00, xres * surface.bypp);
 
 	surface.data_phys = base_phys;
 
@@ -499,7 +515,7 @@ void gFBDC::setResolution(int xres, int yres, int bpp)
 
 	eDebug("[gFBDC] resolution: %d x %d x %d (stride: %d) pages: %d", surface.x, surface.y, surface.bpp, fb->Stride(), fb->getNumPages());
 
-#ifndef CONFIG_ION
+#if !defined(CONFIG_ION) && !defined(HAVE_HISTB)
 	/* accel is already set in fb.cpp */
 	eDebug("[gFBDC] %dkB available for acceleration surfaces.", (fb->Available() - fb_size)/1024);
 	if (gAccel::getInstance())

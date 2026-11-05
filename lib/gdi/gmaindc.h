@@ -16,6 +16,7 @@ protected:
 	virtual ~gMainDC();
 public:
 	virtual void setResolution(int xres, int yres, int bpp = 32) = 0;
+	eSize getResolution() { return size(); }
 	virtual bool suspendGraphics() { return false; }
 	virtual bool resumeGraphics() { return false; }
 	virtual bool isGraphicsSuspended() const { return false; }
