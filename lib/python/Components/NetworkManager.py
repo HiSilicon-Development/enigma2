@@ -308,8 +308,8 @@ class NetworkManager:
 				wifi=wifi,
 			))
 
-	def saveWpaSupplicant(self, onlyIface: str | None = None) -> bool:
-		ok = True
+	def saveWpaSupplicant(self, onlyIface: str | None = None, reconfigure: bool = True) -> bool:
+		self.lastError = ""
 		interfaces = [onlyIface] if onlyIface else list(self.adapters.keys())
 		for interface in interfaces:
 			adapter = self.adapters.get(interface)
@@ -325,10 +325,19 @@ class NetworkManager:
 			if not wifiConfigs and not wpf.exists():
 				continue
 			self.log(f"saveWpaSupplicant: {interface} writing {len(wifiConfigs)} wifi config(s): {", ".join(f"{x.ssid!r}(disabled={x.disabled})" for x in wifiConfigs)}.")
-			wpf.ensureDir()
-			ok = wpf.save(wifiConfigs) and ok
-			self.reconfigureWifi(interface)
-		return ok
+			try:
+				wpf.ensureDir()
+				if not wpf.save(wifiConfigs):
+					self.lastError = _("Unable to save network configuration: %s") % wpf.writePath
+					return False
+			except OSError as err:
+				self.lastError = str(err)
+				return False
+		if reconfigure:
+			for interface in interfaces:
+				if self.adapters.get(interface) and self.adapters[interface].isWiFi:
+					self.reconfigureWifi(interface)
+		return True
 
 	def reconfigureWifi(self, interface: str) -> None:
 		if not self.wpaSupplicantRunning(interface):
@@ -357,7 +366,7 @@ class NetworkManager:
 			return lines
 
 		self.log("save: Starting.")
-		ok = True
+		self.lastError = ""
 		for interface, adapter in self.adapters.items():
 			if not adapter.isWiFi:
 				continue
@@ -381,14 +390,22 @@ class NetworkManager:
 				connMap[interface] = conns
 		adapterEnabledMap = {interface: adapter.adapterEnabled for interface, adapter in self.adapters.items()}
 		self.log(f"save: adapterEnabledMap={adapterEnabledMap}.")
-		ok = self.interfacesFile.save(connMap, adapterEnabledMap) and ok
-		ok = self.saveWpaSupplicant() and ok
+		if not self.interfacesFile.save(connMap, adapterEnabledMap):
+			self.lastError = _("Unable to save network configuration: %s") % self.interfacesFile.writePath
+			return False
+		if not self.saveWpaSupplicant(reconfigure=False):
+			return False
 
 		anyDhcp = any(conn.dhcp for conns in connMap.values() for conn in conns if conn.enabled)
 		self.updateNameserverConfig()
-		ok = self.nsFiles.save(self.nameserverConfig, anyDhcp) and ok
-		self.log(f"save: Done, status={ok}.")
-		return ok
+		if not self.nsFiles.save(self.nameserverConfig, anyDhcp):
+			self.lastError = _("Unable to save DNS configuration (%s).") % f"{nameserverFile}, {resolvFile}"
+			return False
+		for interface, adapter in self.adapters.items():
+			if adapter.isWiFi:
+				self.reconfigureWifi(interface)
+		self.log("save: Done, status=True.")
+		return True
 
 	def activateCommands(self, interface: str) -> list[str]:
 		adapter = self.adapters.get(interface)
@@ -411,17 +428,19 @@ class NetworkManager:
 		]
 
 	def restartNetwork(self, interface: str = "", callback: Callable | None = None):
+		"""Restart through ifupdown; callback receives the action exit code (0 on success)."""
 		self.log(f"restartNetwork: interface={interface or "all"}.")
 
-		def done(retval: int = 0):
+		def done(retval: int):
 			self.log(f"restartNetwork: {interface or "all"} done, returned {retval}.")
-			self.discoverAdapters()
-			self.loadInterfacesFile()
-			self.loadWpaSupplicantFiles()
+			if retval == 0:
+				self.discoverAdapters()
+				self.loadInterfacesFile()
+				self.loadWpaSupplicantFiles()
 			self.applyNetinfo()
-			self.notifyNetworkPlugins(True, interface=interface)
+			self.notifyNetworkPlugins(retval == 0, interface=interface)
 			if callback:
-				callback()
+				callback(retval)
 		self.pendingRestart = ServiceAction.netrestart(done, iface=interface)
 
 	def getAdapter(self, interface: str) -> Adapter | None:
@@ -542,23 +561,28 @@ class NetworkManager:
 		if adapter and not adapter.isWiFi:
 			def lanUp(retval: int):
 				self.log(f"activateInterface: {interface} (LAN) ifup returned {retval}.")
-				self.notifyNetworkPlugins(True)
+				self.notifyNetworkPlugins(retval == 0)
 				if callback:
 					callback(retval == 0)
 			self.log(f"activateInterface: {interface} (LAN) ifup.")
 			self.pendingRestart = ServiceAction.ifup(interface, lanUp)
 			return
 
-		def wlanUp(retval: bool = True):
-			self.log(f"activateInterface: {interface} (Wi-Fi) done.")
-			self.notifyNetworkPlugins(True)
+		def wlanUp(output, retval: int, extraArgs):
+			self.log(f"activateInterface: {interface} (Wi-Fi) returned {retval}: {output}.")
+			self.notifyNetworkPlugins(retval == 0)
 			if callback:
-				callback(True)
+				callback(retval == 0)
 		try:
 			cmds = self.activateCommands(interface)
 			self.log(f"activateInterface: {interface} (Wi-Fi) commands='{cmds}'.")
-			Console().eBatch(cmds, lambda result: wlanUp(), debug=True)
-		except Exception as err:
+			if not cmds:
+				if callback:
+					callback(False)
+				return
+			# eBatch discards exit codes. Preserve the final ifup result instead.
+			Console().ePopen(" && ".join(f"({command})" for command in cmds), callback=wlanUp)
+		except OSError as err:
 			self.log(f"activateInterface: {interface} (Wi-Fi) failed '{err}'!")
 			if callback:
 				callback(False)

@@ -3,6 +3,7 @@ from ipaddress import ip_address
 from os import rename
 from os.path import exists
 from re import IGNORECASE, compile
+from socket import sethostname
 
 from enigma import eTimer, gRGB
 
@@ -23,7 +24,7 @@ from Screens.Processing import Processing
 from Screens.Screen import Screen
 from Screens.Setup import Setup
 from Tools.Conversions import formatNetworkSpeed
-from Tools.Directories import SCOPE_SKINS, fileReadLine, fileReadLines, fileReadXML, fileWriteLine, fileWriteLines, resolveFilename
+from Tools.Directories import SCOPE_SKINS, fileReadLine, fileReadLines, fileReadXML, resolveFilename
 from Tools.ServiceAction import ServiceAction
 
 MODULE_NAME = __name__.split(".")[-1]
@@ -47,40 +48,60 @@ def ip4Str(ipAddress: list) -> str:
 	return "" if joined == "0.0.0.0" else joined
 
 
+def saveNetworkConfiguration() -> str:
+	"""Return an error message on persistence failure, or an empty string on success."""
+	try:
+		if networkManager.save():
+			return ""
+	except OSError as err:
+		return str(err)
+	return networkManager.lastError or _("Unable to save network configuration!")
+
+
 def applyAdapterChange(interface: str, change: int, callback):
-	def afterDownCallback(*args):
-		networkManager.save()
-		afterUpCallback(*args)
-
-	def afterRestartCallback(*args):
+	"""Apply a change; callback receives an empty string on success or the real error."""
+	def finish(error: str = ""):
 		Processing.instance.hideProgress()
-		callback()
-
-	def afterUpCallback(*args):
-		networkManager.notifyNetworkPlugins(True, interface=interface)
-		afterRestartCallback(*args)
-
-	if change == CHANGE_NONE:
 		if callable(callback):
-			callback()
-	else:
-		networkManager.notifyNetworkPlugins(False, interface=interface)
-		Processing.instance.setDescription(_("Please wait..."))
-		Processing.instance.showProgress(endless=True)
-		if change & CHANGE_ADAPTER_DISABLED:
-			adapter = networkManager.adapters.get(interface)
-			if adapter and adapter.isWiFi:
-				ServiceAction.wlanDeactivate(interface, afterDownCallback)
-			else:
-				ServiceAction.ifdown(interface, afterDownCallback)
-		elif change & CHANGE_GENERAL:
-			networkManager.save()
-			networkManager.restartNetwork(interface=interface, callback=afterRestartCallback)
-		elif change & CHANGE_ADAPTER_ENABLED:
-			networkManager.save()
-			ServiceAction.ifup(interface, afterUpCallback)
+			callback(error)
+
+	def afterAction(exitCode: int):
+		networkManager.notifyNetworkPlugins(exitCode == 0, interface=interface)
+		finish(_("Unable to apply network configuration for '%s' (exit code %s).") % (interface, exitCode) if exitCode else "")
+
+	def afterDown(exitCode: int):
+		if exitCode:
+			afterAction(exitCode)
+			return
+		error = saveNetworkConfiguration()
+		if error:
+			finish(error)
 		else:
-			afterRestartCallback()
+			afterAction(0)
+
+	# Keep the old stanza available to ifdown. Every restart/up is gated by a
+	# successful save; a disable saves only after ifdown itself has succeeded.
+	if not change & CHANGE_ADAPTER_DISABLED:
+		error = saveNetworkConfiguration()
+		if error:
+			finish(error)
+			return
+	if change == CHANGE_NONE:
+		finish()
+		return
+	networkManager.notifyNetworkPlugins(False, interface=interface)
+	Processing.instance.setDescription(_("Please wait..."))
+	Processing.instance.showProgress(endless=True)
+	if change & CHANGE_ADAPTER_DISABLED:
+		adapter = networkManager.adapters.get(interface)
+		if adapter and adapter.isWiFi:
+			ServiceAction.wlanDeactivate(interface, afterDown)
+		else:
+			ServiceAction.ifdown(interface, afterDown)
+	elif change & CHANGE_GENERAL:
+		networkManager.restartNetwork(interface=interface, callback=lambda exitCode: finish(_("Unable to restart network adapter '%s' (exit code %s).") % (interface, exitCode) if exitCode else ""))
+	elif change & CHANGE_ADAPTER_ENABLED:
+		ServiceAction.ifup(interface, afterAction)
 
 
 def scanResultToConnection(scanResult, adapter):
@@ -643,34 +664,46 @@ class NetworkOverview(Screen, ProtectedScreen):
 			self.session.openWithCallback(self.setupClosed, NetworkWiFiSetup, adapter, connection)
 
 		def confirmDelete(adapter: Adapter, connection: Connection):
+			def deleteCallback(error):
+				if error:
+					self.session.showError(error)
+				self.buildAdapters()
+
 			def confirmDeleteCallback(confirmed: bool, adapter: Adapter, connection: Connection):
 				if confirmed:
+					previousConnections = list(networkManager.getConnections(adapter.name))
 					if connection.isWiFi and connection.wifi:
 						networkManager.removeConnection(adapter.name, connection.wifi.ssid)
 					else:
 						networkManager.connections[adapter.name] = [x for x in networkManager.getConnections(adapter.name) if x is not connection]
-					networkManager.save()
 					if connection.isWiFi:
-						self.buildAdapters()
+						error = saveNetworkConfiguration()
+						if error:
+							networkManager.connections[adapter.name] = previousConnections
+						deleteCallback(error)
 					else:
-						applyAdapterChange(adapter.name, CHANGE_GENERAL, self.buildAdapters)
+						applyAdapterChange(adapter.name, CHANGE_GENERAL, deleteCallback)
 
 			connectionLabel = self.connectionLabel(adapter, connection)
 			self.session.openWithCallback(lambda confirmed: confirmDeleteCallback(confirmed, adapter, connection), MessageBox, _("Confirm the deletion of '%s'?") % connectionLabel, type=MessageBox.TYPE_YESNO, windowTitle=_("Saved Wi-Fi Network '%s' Context Menu") % connectionLabel)
 
 		def restartAdapter(adapter: Adapter):
-			def restartAdapterCallback():
+			def restartAdapterCallback(exitCode):
 				Processing.instance.hideProgress()
 				self.buildAdapters()
+				if exitCode:
+					self.session.showError(_("Unable to restart network adapter '%s' (exit code %s).") % (adapter.name, exitCode))
 
 			Processing.instance.setDescription(_("Restarting adapter..."))
 			Processing.instance.showProgress(endless=True)
 			networkManager.restartNetwork(interface=adapter.name, callback=restartAdapterCallback)
 
 		def restartNetwork():
-			def restartNetworkCallback():
+			def restartNetworkCallback(exitCode):
 				Processing.instance.hideProgress()
 				self.buildAdapters()
+				if exitCode:
+					self.session.showError(_("Unable to restart network (exit code %s).") % exitCode)
 
 			Processing.instance.setDescription(_("Restarting network..."))
 			Processing.instance.showProgress(endless=True)
@@ -722,9 +755,12 @@ class NetworkOverview(Screen, ProtectedScreen):
 				self.toggleSaved(adapter, connection)
 
 	def toggleAdapter(self, adapter: Adapter):
-		def toggleAdapterCallback():
+		def toggleAdapterCallback(error):
 			self.refreshAdapters()
-			self.session.showInfo(_("Network adapter enabled.") if adapter.adapterEnabled else _("Network adapter disabled."))
+			if error:
+				self.session.showError(error)
+			else:
+				self.session.showInfo(_("Network adapter enabled.") if adapter.adapterEnabled else _("Network adapter disabled."))
 
 		adapter.adapterEnabled = not adapter.adapterEnabled
 		change = CHANGE_ADAPTER_ENABLED if adapter.adapterEnabled else CHANGE_ADAPTER_DISABLED
@@ -736,14 +772,21 @@ class NetworkOverview(Screen, ProtectedScreen):
 			connection.priority = max(x.priority for x in others) + 10
 
 	def toggleSaved(self, adapter: Adapter, connection: Connection):
-		def toggleSavedCallback(*_args):
+		def toggleSavedCallback(output="", exitCode=0, extraArgs=None):
 			self.refreshAdapters()
-			self.session.showInfo(_("Saved Wi-Fi network connection enabled.") if connection.enabled else _("Saved Wi-Fi network connection disabled."))
+			if exitCode or output.strip() == "FAIL":
+				self.session.showError(_("Unable to change saved Wi-Fi network (exit code %s).\n%s") % (exitCode, output))
+			else:
+				self.session.showInfo(_("Saved Wi-Fi network connection enabled.") if connection.enabled else _("Saved Wi-Fi network connection disabled."))
 
 		if connection.enabled:
 			wasLive = self.isConnectionLive(adapter, connection)
 			connection.enabled = False
-			networkManager.save()
+			error = saveNetworkConfiguration()
+			if error:
+				connection.enabled = True
+				self.session.showError(error)
+				return
 			if wasLive and connection.wifi and connection.wifi.wpaId is not None:
 				Console().ePopen((wpaCliBin, wpaCliBin, "-i", adapter.name, "disable_network", str(connection.wifi.wpaId)), callback=toggleSavedCallback)
 			else:
@@ -751,7 +794,11 @@ class NetworkOverview(Screen, ProtectedScreen):
 		else:
 			connection.enabled = True
 			self.promoteWiFiPriority(adapter, connection)
-			networkManager.save()
+			error = saveNetworkConfiguration()
+			if error:
+				connection.enabled = False
+				self.session.showError(error)
+				return
 			if connection.wifi and connection.wifi.wpaId is not None:
 				Console().ePopen((wpaCliBin, wpaCliBin, "-i", adapter.name, "select_network", str(connection.wifi.wpaId)), callback=toggleSavedCallback)
 			else:
@@ -767,8 +814,11 @@ class NetworkOverview(Screen, ProtectedScreen):
 		connection = self.getCurrentSaved()
 		if adapter and connection and connection.enabled and not self.isConnectionLive(adapter, connection):
 			self.promoteWiFiPriority(adapter, connection)
-			networkManager.save()
-			self.session.openWithCallback(lambda *_: self.refreshAdapters(), NetworkWiFiActivator, adapter, connection)
+			error = saveNetworkConfiguration()
+			if error:
+				self.session.showError(error)
+			else:
+				self.session.openWithCallback(lambda *_: self.refreshAdapters(), NetworkWiFiActivator, adapter, connection)
 
 	def keyTop(self):
 		self[self.currentList].goTop()
@@ -803,6 +853,7 @@ class NetworkAdapterSetup(Setup):
 		self.hasWakeOnLan = adapter.name == "eth0" and BoxInfo.getItem("wol") and BoxInfo.getItem("WakeOnLAN")
 		Setup.__init__(self, session=session, setup="NetworkAdapter")
 		self.savePending = False
+		self.pendingChange = CHANGE_NONE
 		self.setTitle(_("Network Adapter '%s' Settings") % adapter.name)
 		self["key_info"] = StaticText(_("INFO"))
 		self["infoActions"] = HelpableActionMap(self, ["InfoActions"], {
@@ -853,10 +904,14 @@ class NetworkAdapterSetup(Setup):
 		self.session.open(NetworkInformation, self.adapter)
 
 	def keySave(self):
-		def saveCallback():
+		def saveCallback(error):
 			# Screen.doClose() clears the attributes if the dialog was already closed.
 			if getattr(self, "savePending", False):
-				self.close((False, True))
+				if error:
+					self.savePending = False
+					self.session.showError(error)
+				else:
+					self.close((False, True))
 
 		if self.savePending:
 			return
@@ -901,11 +956,15 @@ class NetworkAdapterSetup(Setup):
 			else:
 				networkManager.setRouteMetrics(lanMetric=self.cfgMetric.value)
 		nowGeneral = (connection.dhcp, connection.ipMode, connection.ip, connection.netmask, connection.gateway, connection.dnsServers)
-		change = CHANGE_NONE
+		change = self.pendingChange  # Retry an unsuccessful apply even if the editor values did not change again.
 		if nowGeneral != wasGeneral or self.cfgLinkSpeed.value != wasLinkSpeed or connection.wakeOnWiFi != wasWakeOnWiFi:
 			change |= CHANGE_GENERAL
 		if adapter.adapterEnabled != wasEnabled:
 			change |= CHANGE_ADAPTER_ENABLED if adapter.adapterEnabled else CHANGE_ADAPTER_DISABLED
+		if change & (CHANGE_ADAPTER_ENABLED | CHANGE_ADAPTER_DISABLED):
+			change &= ~(CHANGE_ADAPTER_ENABLED | CHANGE_ADAPTER_DISABLED)
+			change |= CHANGE_ADAPTER_ENABLED if adapter.adapterEnabled else CHANGE_ADAPTER_DISABLED
+		self.pendingChange = change
 		if self.hasWakeOnLan:
 			config.network.wol.save()
 		applyAdapterChange(adapter.name, change, saveCallback)
@@ -969,14 +1028,10 @@ class NetworkWiFiSetup(Setup):
 
 	def keySave(self):
 		def wifiConnectionVerifiedCallback(ipAddress=""):
-			def wifiRetryCallback(retry):
-				if not retry:
-					self.close((False, True, ""))
-
 			if ipAddress:
 				self.close((False, True, ipAddress))
 			else:
-				self.session.openWithCallback(wifiRetryCallback, MessageBox, _("Could not verify the saved Wi-Fi network.\n\nDo you want to change the settings again?"), type=MessageBox.TYPE_YESNO)
+				self.session.showError(_("Could not apply the saved Wi-Fi network. Please check the settings and try again."))
 
 		connection = self.connection
 		adapter = self.adapter
@@ -1000,12 +1055,12 @@ class NetworkWiFiSetup(Setup):
 		connections = networkManager.getConnections(adapter.name)
 		if not any(x is connection for x in connections):
 			connections.append(connection)
-		wasEnabled = adapter.adapterEnabled
 		if connection.enabled:
 			adapter.adapterEnabled = True
-		networkManager.saveWpaSupplicant(adapter.name)
-		if not wasEnabled and adapter.adapterEnabled:
-			networkManager.save()
+		error = saveNetworkConfiguration()
+		if error:
+			self.session.showError(error)
+			return
 		if connection.enabled:
 			self.session.openWithCallback(wifiConnectionVerifiedCallback, NetworkWiFiActivator, adapter, connection)
 		else:
@@ -1473,7 +1528,7 @@ class NetworkWiFiActivator(Screen):
 	def start(self):
 		def startCallback(retval: int):
 			if retval:
-				self.setStatus(self.diagnoseFailure())
+				self.setStatus(_("Wi-Fi activation failed (exit code %s).") % retval + "\n\n" + self.diagnoseFailure())
 				self["key_red"].setText(_("Close"))
 			else:
 				self.beginPolling()
@@ -1559,15 +1614,7 @@ class NetworkWiFiAddFlow:
 			def setupCallback(*result):
 				ip = ""
 				if len(result) == 1 and isinstance(result[0], tuple):
-					saved = bool(result[0][1]) if len(result[0]) > 1 else False
 					ip = result[0][2] if len(result[0]) > 2 else ""
-				else:
-					saved = bool(result[0]) if result else False
-				if saved:
-					connections = networkManager.getConnections(adapter.name)
-					if not any(x.wifi and x.wifi.ssid == (connection.wifi.ssid if connection.wifi else "") for x in connections):
-						connections.append(connection)
-						networkManager.saveWpaSupplicant(adapter.name)
 				if callback and callable(callback):
 					callback(ip)
 
@@ -1877,13 +1924,15 @@ class DNSSettings(Setup):
 		return self.dnsServerGroups[:index].count(self.dnsServerGroups[index])
 
 	def keySave(self):  # This method replaces the method of the same name in the parent Setup class.
-		if self.hostname.isChanged:
-			fileWriteLine("/etc/hostname", f"{self.hostname.value}\n", source=MODULE_NAME)
 		servers: list = []
 		match config.usage.dns.value:
 			case "dnscrypt":
 				servers = [[127, 0, 0, 1]]
-				self.writeDnsCryptToml()
+				try:
+					self.writeDnsCryptToml()
+				except OSError as err:
+					self.session.showError(str(err))
+					return
 			case "custom":
 				for item in self.dnsServerItems:
 					value = item[1].value
@@ -1894,10 +1943,19 @@ class DNSSettings(Setup):
 					if value:
 						servers.append(value)
 		networkManager.setNameservers(servers)
-		if networkManager.save():
-			Setup.keySave(self)
-		else:
-			self.session.showError(_("Unable to save network configuration!"))
+		error = saveNetworkConfiguration()
+		if error:
+			self.session.showError(error)
+			return
+		if self.hostname.isChanged():
+			try:
+				sethostname(self.hostname.value.encode("utf-8"))
+				with open("/etc/hostname", "w", encoding="utf-8") as hostnameFile:
+					hostnameFile.write(f"{self.hostname.value}\n")
+			except (OSError, ValueError, UnicodeError) as err:
+				self.session.showError(_("Unable to apply hostname: %s") % err)
+				return
+		Setup.keySave(self)
 
 	def writeDnsCryptToml(self):  # DNSCrypt TOML helpers.
 		def replaceKeyLine(line, key, value, foundSet):
@@ -1954,7 +2012,10 @@ class DNSSettings(Setup):
 					foundSet.add(token)
 
 		tomlPath = "/etc/dnscrypt-proxy/dnscrypt-proxy.toml"
-		oldLines = fileReadLines(tomlPath, default=[], source=MODULE_NAME)
+		with open(tomlPath, encoding="utf-8") as tomlFile:
+			oldLines = tomlFile.read().splitlines()
+		if not oldLines:
+			raise OSError(_("DNSCrypt configuration is empty: %s") % tomlPath)
 		if oldLines:
 			found = set()
 			newLines = []
@@ -1997,9 +2058,9 @@ class DNSSettings(Setup):
 			insertSectionKey(newLines, "monitoring_ui", "password", tomlString(config.usage.DNSCryptPassword.value.strip()), ["username", "password"], found)
 			insertSectionKey(newLines, "monitoring_ui", "privacy_level", tomlInteger(config.usage.DNSCryptPrivacy.value, 1), ["password", "privacy_level"], found)
 			tmpPath = f"{tomlPath}.tmp"
-			fileWriteLines(tmpPath, newLines)
-			if exists(tmpPath):
-				rename(tmpPath, tomlPath)
+			with open(tmpPath, "w", encoding="utf-8") as tomlFile:
+				tomlFile.write("\n".join(newLines) + "\n")
+			rename(tmpPath, tomlPath)
 
 	def keyMoveItemUp(self):
 		self.moveItem(-1)
