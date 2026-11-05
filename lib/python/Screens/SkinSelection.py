@@ -7,6 +7,7 @@ from Components.config import ConfigSelection, NoSave, config
 from Components.Pixmap import Pixmap
 from Components.PluginComponent import plugins
 from Plugins.Plugin import PluginDescriptor
+from Screens.MessageBox import MessageBox
 from Screens.Processing import Processing
 from Screens.Setup import Setup
 from Screens.Standby import QUIT_RESTART, TryQuitMainloop
@@ -31,6 +32,7 @@ class SkinSelection(Setup):
 		self.lcdRoot = join(self.guiRoot, "display")
 		self.noPreview = join(resolveFilename(SCOPE_GUISKIN), "noprev.png")
 		self.createItems()
+		self.initialGuiSkin = config.skin.primary_skin.value
 		Setup.__init__(self, session, "Skin")
 		self["preview"] = Pixmap()
 		self["preview"].hide()
@@ -87,14 +89,19 @@ class SkinSelection(Setup):
 		Setup.selectionChanged(self)
 		self.loadPreview()
 
+	def getConfigList(self):
+		# The selectors are NoSave; include the actual persisted skin settings.
+		return Setup.getConfigList(self) + [
+			(_("GUI Skin"), config.skin.primary_skin),
+			(_("LCD/Front panel"), config.skin.display_skin)
+		]
+
 	def keySave(self):
-		guiSkinChanged = config.skin.guiSkin.value != config.skin.primary_skin.value
+		guiSkinChanged = config.skin.guiSkin.value != self.initialGuiSkin
 		if guiSkinChanged:
 			config.skin.primary_skin.value = config.skin.guiSkin.value
-			config.skin.primary_skin.save()
 		if config.skin.lcdSkin.value != config.skin.display_skin.value:
 			config.skin.display_skin.value = config.skin.lcdSkin.value
-			config.skin.display_skin.save()
 
 		from Screens.ChannelSelection import ChannelSelection, ChannelSelectionSetup
 
@@ -104,7 +111,12 @@ class SkinSelection(Setup):
 		if guiSkinChanged and config.usage.fastSkinReload.value:
 			Processing.instance.setDescription(_("Loading skin..."))
 			Processing.instance.showProgress(endless=True)
-			self.saveAll()
+			try:
+				self.saveAll()
+			except OSError as error:
+				Processing.instance.hideProgress()
+				self.session.open(MessageBox, _("Unable to save settings: %s") % error, type=MessageBox.TYPE_ERROR)
+				return
 			open("/etc/.restore_skins", "w").close()
 			from skin import reloadSkins
 			reloadSkins()
