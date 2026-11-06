@@ -22,6 +22,9 @@ class fbClass
 	int m_manual_blit;
 	int m_number_of_pages;
 	int m_phys_mem;
+#ifdef HAVE_HISTB
+	bool m_drm_backing;
+#endif
 #ifdef SWIG
 	fbClass(const char *fb=FB_DEV);
 	~fbClass();

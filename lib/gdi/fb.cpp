@@ -45,6 +45,13 @@ fbClass::fbClass(const char *fb)
 	locked=0;
 	lfb = 0;
 	available=0;
+	fbFd = -1;
+	xRes = yRes = stride = bpp = m_phys_mem = 0;
+	m_number_of_pages = 0;
+	memset(&screeninfo, 0, sizeof(screeninfo));
+#ifdef HAVE_HISTB
+	m_drm_backing = false;
+#endif
 	cmap.start=0;
 	cmap.len=256;
 	cmap.red=red;
@@ -63,7 +70,37 @@ fbClass::fbClass(const char *fb)
 	fbFd=open(fb, O_RDWR);
 	if (fbFd<0)
 	{
+#ifdef HAVE_HISTB
+		const int openError = errno;
+#endif
 		eDebug("[fb] %s %m", fb);
+#ifdef HAVE_HISTB
+		if (openError == ENOENT || openError == ENODEV || openError == ENXIO)
+		{
+			auto &session = histbDrmSession();
+			std::lock_guard<std::mutex> lock(session.mutex);
+			if (histbOsdCreateCanvas())
+			{
+				const auto &canvas = session.canvas;
+				m_drm_backing = true;
+				lfb = canvas.map;
+				available = canvas.size;
+				/* GEM CPU mappings expose no physical DMA address. Zero keeps
+				 * the existing software UI drawing path, not fake acceleration. */
+				m_phys_mem = 0;
+				xRes = screeninfo.xres = screeninfo.xres_virtual = canvas.width;
+				yRes = screeninfo.yres = screeninfo.yres_virtual = canvas.height;
+				bpp = screeninfo.bits_per_pixel = 32;
+				screeninfo.transp.offset = 24; screeninfo.transp.length = 8;
+				screeninfo.red.offset = 16; screeninfo.red.length = 8;
+				screeninfo.green.offset = 8; screeninfo.green.length = 8;
+				screeninfo.blue.offset = 0; screeninfo.blue.length = 8;
+				stride = canvas.pitch;
+				m_number_of_pages = 1;
+				return;
+			}
+		}
+#endif
 		goto nolfb;
 	}
 
@@ -169,9 +206,10 @@ err_ioc_free:
 	lfb=(unsigned char*)mmap(0, available, PROT_WRITE|PROT_READ, MAP_SHARED, fbFd, 0);
 #endif
 #ifndef CONFIG_ION
-	if (!lfb)
+	if (!lfb || lfb == MAP_FAILED)
 	{
 		eDebug("[fb] mmap %m");
+		lfb = 0;
 		goto nolfb;
 	}
 #endif
@@ -181,6 +219,8 @@ err_ioc_free:
 	enableManualBlit();
 	return;
 nolfb:
+	available = 0;
+	m_phys_mem = 0;
 	if (fbFd >= 0)
 	{
 		::close(fbFd);
@@ -206,17 +246,27 @@ int fbClass::showConsole(int state)
 
 int fbClass::SetMode(int nxRes, int nyRes, int nbpp)
 {
-	if (fbFd < 0) return -1;
 #ifdef HAVE_HISTB
-	// DRM fbdev owns the allocation. The skin selects GP0 source geometry,
+	if (fbFd < 0 && !m_drm_backing) return -1;
+	// The skin selects GP0 source geometry within the exact mapped backing,
 	// not a new fbdev/HDMI mode or a tightly packed replacement buffer.
-	fb_var_screeninfo native = {};
+	fb_var_screeninfo native = screeninfo;
 	fb_fix_screeninfo nativeFix = {};
-	if (ioctl(fbFd, FBIOGET_VSCREENINFO, &native) < 0 || ioctl(fbFd, FBIOGET_FSCREENINFO, &nativeFix) < 0 ||
-		nbpp != 32 || native.bits_per_pixel != 32 || nxRes <= 0 || nyRes <= 0 ||
+	if (m_drm_backing)
+	{
+		nativeFix.line_length = stride;
+		nativeFix.smem_len = available;
+	}
+	else if (ioctl(fbFd, FBIOGET_VSCREENINFO, &native) < 0 || ioctl(fbFd, FBIOGET_FSCREENINFO, &nativeFix) < 0)
+	{
+		eWarning("[fb] cannot query native framebuffer backing: %m");
+		return -1;
+	}
+	if (nbpp != 32 || native.bits_per_pixel != 32 || nxRes <= 0 || nyRes <= 0 ||
 		(unsigned int)nxRes > native.xres || (unsigned int)nyRes > native.yres ||
-		nativeFix.line_length < native.xres * 4 || uint64_t(nativeFix.line_length) * native.yres > nativeFix.smem_len ||
-		!histbOsdSetGeometry(nxRes, nyRes))
+		native.xoffset || native.yoffset ||
+		nativeFix.line_length < uint64_t(native.xres) * 4 || uint64_t(nativeFix.line_length) * native.yres > nativeFix.smem_len ||
+		!histbOsdSetGeometry(nxRes, nyRes, native.xres, native.yres, nativeFix.line_length))
 	{
 		eWarning("[fb] cannot apply logical canvas %dx%dx%d; retaining previous geometry", nxRes, nyRes, nbpp);
 		return -1;
@@ -226,6 +276,8 @@ int fbClass::SetMode(int nxRes, int nyRes, int nbpp)
 	stride = nativeFix.line_length;
 	m_number_of_pages = 1;
 	return 0;
+#else
+	if (fbFd < 0) return -1;
 #endif
 #ifdef CONFIG_ION
 	/* unmap old framebuffer with old size */
@@ -419,6 +471,16 @@ void fbClass::blit()
 
 fbClass::~fbClass()
 {
+#ifdef HAVE_HISTB
+	if (m_drm_backing)
+	{
+		/* Session owns FB, GEM handle and mapping together. RMFB completes
+		 * before userspace releases memory that may have reached GP0. */
+		histbOsdReleaseCanvas();
+		lfb = 0;
+		return;
+	}
+#endif
 #ifdef CONFIG_ION
 	if (m_accel_fd > -1)
 		close(m_accel_fd);
@@ -445,6 +507,7 @@ int fbClass::PutCMAP()
 
 int fbClass::lock()
 {
+	if (fbFd < 0) return -1;
 	if (locked)
 		return -1;
 	if (m_manual_blit == 1)
