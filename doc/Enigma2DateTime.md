@@ -26,6 +26,22 @@ Care should be taken before enabling the time options in a skin, particularly th
 
 `dateTimes.updateDatesAndTimes()` rebuilds every format. It runs at start up, after a skin reload, on every change in the settings screen and when the settings screen is saved or closed.
 
+## Debian time-source transactions
+
+On Debian, `Screens.DateTime.DateTime` applies the selected time source through
+`NTPSyncPoller.applySettings()` before committing the configuration. Backend
+failure keeps the edited values available for correction; a settings-file
+write failure also preserves the original `saved_value` and `loadValue` for
+cancel. Cancel after an apply attempt restores the screen's original backend
+settings and reports restoration failures instead of hiding them.
+
+Hidden day-separator and meridiem controls participate in `getConfigList()` so
+they use the same save/cancel transaction as visible controls. Other platforms
+retain their existing network-time save notification. Web interfaces must use
+the `DateTime` setup key for batch save/cancel and formatting callbacks; the
+obsolete `Screens.Time` screen is not retained as an alias.
+
+
 ## Skin parameter
 
 The infrastructure is controlled by the active skin. To enable it a skin author adds a `<parameter>` tag to the `<parameters>` section of the skin:
